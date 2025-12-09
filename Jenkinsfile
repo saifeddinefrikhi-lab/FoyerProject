@@ -32,6 +32,8 @@ pipeline {
             }
         }
 
+
+
         stage('Docker Login & Push') {
             steps {
                 echo "Connexion + push vers DockerHub..."
