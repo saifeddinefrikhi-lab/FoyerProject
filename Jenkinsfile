@@ -46,37 +46,6 @@ pipeline {
 				}
 			}
 		}
-
-		// Ajouter ce stage après "Docker Login & Push"
-            stage('Deploy to Kubernetes') {
-                steps {
-                    echo "Déploiement sur Kubernetes..."
-                    script {
-                        // Appliquer les configurations Kubernetes
-                        sh """
-                            kubectl apply -f mysql-deployment.yaml -n devops
-                            kubectl apply -f spring-configmap.yaml -n devops
-                            kubectl apply -f spring-secret.yaml -n devops
-
-                            # Mettre à jour l'image du deployment Spring Boot
-                            kubectl set image deployment/spring-app spring-app=${IMAGE_NAME}:${IMAGE_TAG} -n devops
-
-                            # Redémarrer le deployment pour prendre en compte les changements
-                            kubectl rollout restart deployment/spring-app -n devops
-                        """
-                    }
-                }
-            }
-
-        stage('SonarQube Analysis') {
-                steps {
-                    echo "Analyse de la qualité du code avec SonarQube..."
-                    withSonarQubeEnv('SonarQube-Server') {
-                        sh 'mvn sonar:sonar -Dsonar.projectKey=tp-foyer'
-                    }
-                }
-            }
-
 	}
 
 
