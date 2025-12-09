@@ -6,9 +6,9 @@ pipeline {
 		IMAGE_TAG  = "latest"
 	}
 
-	triggers {
-		pollSCM('* * * * *')  // vérification chaque minute
-	}
+	//triggers {
+		//pollSCM('* * * * *')  // vérification chaque minute
+	//}
 
 	stages {
 
