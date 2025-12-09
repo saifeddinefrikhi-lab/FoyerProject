@@ -51,7 +51,6 @@ pipeline {
             steps {
                 echo "Déploiement sur Kubernetes..."
                 script {
-                    // Appliquer les configurations Kubernetes avec chemins absolus
                     sh """
                         kubectl apply -f /home/vagrant/mysql-deployment.yaml -n devops
                         kubectl apply -f /home/vagrant/spring-configmap.yaml -n devops
