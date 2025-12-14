@@ -37,7 +37,7 @@ pipeline {
                         echo "=== Démarrage de l'application en local ==="
                         timeout(time: 2, unit: 'MINUTES') {
                             sh '''
-                                # Démarrez l'application en arrière-plan
+                                #Démarrez l'application en arrière-plan
                                 java -jar target/*.jar --spring.datasource.url=jdbc:h2:mem:testdb --spring.datasource.username=sa --spring.datasource.password= &
                                 APP_PID=$!
                                 sleep 30
