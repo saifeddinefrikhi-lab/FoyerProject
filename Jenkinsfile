@@ -4,6 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = "saiffrikhi/foyer_project"
         IMAGE_TAG  = "latest"
+        K8S_NAMESPACE = "devops"
     }
 
     triggers {
@@ -11,7 +12,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 echo "Récupération du code depuis GitHub..."
@@ -36,7 +36,7 @@ pipeline {
         stage('Docker Login & Push') {
             steps {
                 echo "Connexion + push vers DockerHub..."
-                withCredentials([usernamePassword(credentialsId: 'bf441a15-9a0e-4cb2-ba9d-937b67370965',
+                withCredentials([usernamePassword(credentialsId: 'docker-hub',
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS')]) {
                     sh """
@@ -50,17 +50,32 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 echo "Déploiement sur Kubernetes..."
+
+                // Mettre à jour l'image dans le déploiement
+                sh """
+                    kubectl set image deployment/spring-app \
+                    spring-app=${IMAGE_NAME}:${IMAGE_TAG} \
+                    -n ${K8S_NAMESPACE} \
+                    --record
+                """
+
+                // Vérifier le rollout
+                sh """
+                    kubectl rollout status deployment/spring-app \
+                    -n ${K8S_NAMESPACE} \
+                    --timeout=300s
+                """
+            }
+        }
+
+        stage('Integration Tests') {
+            steps {
+                echo "Exécution des tests d'intégration..."
                 script {
+                    def SPRING_URL = sh(script: 'minikube service spring-service -n devops --url', returnStdout: true).trim()
                     sh """
-                        kubectl apply -f /home/vagrant/mysql-deployment.yaml -n devops
-                        kubectl apply -f /home/vagrant/spring-configmap.yaml -n devops
-                        kubectl apply -f /home/vagrant/spring-secret.yaml -n devops
-
-                        # Mettre à jour l'image du deployment Spring Boot
-                        kubectl set image deployment/spring-app spring-app=${IMAGE_NAME}:${IMAGE_TAG} -n devops
-
-                        # Redémarrer le deployment pour prendre en compte les changements
-                        kubectl rollout restart deployment/spring-app -n devops
+                        curl -f ${SPRING_URL}/actuator/health
+                        curl -f ${SPRING_URL}/department/getAllDepartment
                     """
                 }
             }
@@ -70,12 +85,19 @@ pipeline {
     post {
         always {
             echo "Pipeline terminé"
+            // Nettoyage
+            sh 'docker system prune -f'
         }
         success {
-            echo "Build et Push effectués avec succès!"
+            echo "Build et déploiement effectués avec succès!"
+            // Notification optionnelle
         }
         failure {
             echo "Le pipeline a échoué."
+            // Rollback optionnel
+            sh """
+                kubectl rollout undo deployment/spring-app -n ${K8S_NAMESPACE}
+            """
         }
     }
 }
