@@ -14,7 +14,7 @@ pipeline {
     }
 
     triggers {
-        pollSCM('* * * * *')  // Poll SCM instead of githubPush (more reliable)
+        githubPush()  // Poll SCM instead of githubPush (more reliable)
     }
 
     stages {
