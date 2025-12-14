@@ -8,6 +8,11 @@ pipeline {
         CONTEXT_PATH = "/tp-foyer"
     }
 
+     triggers {
+            githubPush() // This enables webhook triggers
+        }
+
+
     stages {
         stage('Checkout') {
             steps {
