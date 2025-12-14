@@ -9,9 +9,8 @@ pipeline {
     }
 
      triggers {
-            githubPush() // This enables webhook triggers
-        }
-
+                githubPush() // This enables webhook triggers
+            }
 
     stages {
         stage('Checkout') {
@@ -174,21 +173,6 @@ EOF
                 }
             }
         }
-
-        stage('Docker Login & Push') {
-                    steps {
-                        echo "Connexion + push vers DockerHub..."
-                        withCredentials([usernamePassword(credentialsId: 'docker-hub',
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASS')]) {
-                            sh """
-                                echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                                docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                            """
-                        }
-                    }
-                }
-
 
         stage('Clean Old Kubernetes Resources') {
             steps {
