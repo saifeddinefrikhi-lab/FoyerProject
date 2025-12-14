@@ -9,8 +9,8 @@ pipeline {
     }
 
     tools {
-        maven 'M3'  // Make sure this tool is configured in Jenkins
-        jdk 'jdk17'  // Make sure JDK is configured in Jenkins
+        maven 'M2_HOME'  // Make sure this tool is configured in Jenkins
+        jdk 'JAVA_HOME'  // Make sure JDK is configured in Jenkins
     }
 
     triggers {
