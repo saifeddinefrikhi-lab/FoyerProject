@@ -12,7 +12,6 @@ pipeline {
             githubPush() // This enables webhook triggers
         }
 
-
     stages {
         stage('Checkout') {
             steps {
