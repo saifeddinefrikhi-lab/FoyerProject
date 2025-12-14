@@ -50,12 +50,6 @@ pipeline {
                     sh """
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                     """
-
-                    // Préparer les répertoires de données
-                    sh '''
-                        sudo mkdir -p /data/mysql /data/sonarqube
-                        sudo chmod 777 /data/mysql /data/sonarqube || true
-                    '''
                 }
             }
         }
