@@ -12,8 +12,6 @@ pipeline {
         // Configuration Kubernetes
         K8S_NAMESPACE = "devops"
         CONTEXT_PATH = "/tp-foyer"
-
-
     }
 
     options {
@@ -25,7 +23,6 @@ pipeline {
         // Déclencheur webhook GitHub
         githubPush()
     }
-
 
     stages {
         stage('Checkout Code') {
@@ -118,7 +115,8 @@ pipeline {
                     echo "=== Rapport de tests ==="
                     if [ -d "target/surefire-reports" ]; then
                         echo "Résumé des tests:"
-                        find target/surefire-reports -name "*.txt" -exec grep -E "(Tests run:|FAILURES)" {} \;
+                        # CORRECTION: Utiliser xargs au lieu de -exec avec backslash
+                        find target/surefire-reports -name "*.txt" | xargs grep -E "(Tests run:|FAILURES)" || echo "Aucun rapport de test trouvé"
                     fi
                 '''
             }
@@ -291,8 +289,6 @@ pipeline {
                 }
             }
         }
-
-
     }
 
     post {
@@ -325,7 +321,6 @@ pipeline {
                     MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "192.168.49.2")
                     echo "Spring Boot: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}"
                     echo "MySQL: mysql-service:3306"
-                    echo "SonarQube: http://\${MINIKUBE_IP}:32000"
                 """
             }
         }
@@ -369,8 +364,7 @@ pipeline {
                     echo "   kubectl rollout restart deployment/spring-app -n ${K8S_NAMESPACE}"
                     echo ""
                     echo "2. Vérifier la connexion MySQL:"
-                    echo "   kubectl run debug -n ${K8S_NAMESPACE} --image=mysql:8.0 -it --rm -- \\\\"
-                    echo "     mysql -h mysql-service -u root -proot123 -e 'SHOW DATABASES;'"
+                    echo "   kubectl run debug -n ${K8S_NAMESPACE} --image=mysql:8.0 -it --rm -- mysql -h mysql-service -u root -proot123 -e 'SHOW DATABASES;'"
                     echo ""
                     echo "3. Accéder au pod:"
                     echo "   kubectl exec -n ${K8S_NAMESPACE} -it \$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}') -- /bin/sh"
