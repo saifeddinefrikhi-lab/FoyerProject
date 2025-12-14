@@ -58,7 +58,7 @@ pipeline {
         stage('Test') {
             steps {
                 echo "Exécution des tests..."
-                sh 'mvn test -B'
+                sh 'mvn test '
             }
             post {
                 always {
