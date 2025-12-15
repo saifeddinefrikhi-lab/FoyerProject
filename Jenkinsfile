@@ -211,6 +211,26 @@ EOF
                                     CREATE DATABASE IF NOT EXISTS springdb;
                                     SHOW DATABASES;
                                 " 2>/dev/null && echo "✅ Base de données vérifiée/créée"
+
+                                # CRITICAL FIX: Grant permissions to root user from any host
+                                echo "=== Configuration des permissions MySQL ==="
+                                kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "
+                                    -- Create root user for all hosts if it doesn't exist
+                                    CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root123';
+
+                                    -- Grant all privileges to root from any host
+                                    GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
+                                    -- Update existing root@localhost password to ensure consistency
+                                    ALTER USER 'root'@'localhost' IDENTIFIED BY 'root123';
+
+                                    -- Flush privileges to apply changes
+                                    FLUSH PRIVILEGES;
+
+                                    -- Verify users
+                                    SELECT User, Host FROM mysql.user;
+                                " 2>/dev/null && echo "✅ Permissions MySQL configurées"
+
                                 break
                             fi
                         fi
@@ -338,7 +358,6 @@ spec:
           value: "foyer-app"
         - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
           value: "health,info"
-        # Simplified probes - remove for now
         resources:
           requests:
             memory: "512Mi"
@@ -346,6 +365,20 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: ${CONTEXT_PATH}/actuator/health
+            port: 8050
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: ${CONTEXT_PATH}/actuator/health
+            port: 8050
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          timeoutSeconds: 5
 """
 
                     // Write the YAML file
@@ -356,8 +389,8 @@ spec:
                     echo "=== Application du déploiement ==="
                     kubectl apply -f spring-deployment.yaml
 
-                    echo "=== Attente du démarrage (2 minutes) ==="
-                    sleep 120
+                    echo "=== Attente du démarrage (3 minutes) ==="
+                    sleep 180
 
                     echo "=== Vérification de l'état ==="
                     kubectl get pods,svc -n ${K8S_NAMESPACE}
@@ -402,21 +435,67 @@ spec:
                     fi
 
                     echo ""
-                    echo "=== Test de l'application ==="
+                    echo "=== Test de connexion MySQL depuis un pod test ==="
+                    # Test MySQL connection from a test pod
+                    cat > /tmp/test-mysql-connection.yaml << 'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-mysql-connection
+  namespace: devops
+spec:
+  containers:
+  - name: mysql-client
+    image: mysql:8.0
+    command: ["sleep", "3600"]
+  restartPolicy: Never
+EOF
+                    kubectl apply -f /tmp/test-mysql-connection.yaml
+                    sleep 10
+
+                    echo "=== Test de connexion à MySQL depuis un autre pod ==="
+                    if kubectl exec -n ${K8S_NAMESPACE} test-mysql-connection -- mysql -h mysql-service -u root -proot123 -e "SELECT 1;" 2>/dev/null; then
+                        echo "✅ Connexion MySQL réussie depuis un autre pod"
+                    else
+                        echo "❌ Échec de connexion MySQL depuis un autre pod"
+                    fi
+
+                    # Cleanup test pod
+                    kubectl delete pod test-mysql-connection -n ${K8S_NAMESPACE} --ignore-not-found=true
+
+                    echo ""
+                    echo "=== Test de l'application Spring Boot ==="
                     MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "192.168.49.2")
                     echo "Minikube IP: \$MINIKUBE_IP"
 
                     # Try with longer timeout
-                    echo "Tentative de connexion..."
-                    if curl -s -m 30 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
-                        echo "✅ SUCCÈS avec contexte path: ${CONTEXT_PATH}"
-                    elif curl -s -m 30 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
-                        echo "✅ SUCCÈS sans contexte path"
-                    elif curl -s -m 30 "http://\${MINIKUBE_IP}:30080/"; then
-                        echo "✅ Réponse du serveur sur la racine"
+                    echo "Tentative de connexion à Spring Boot..."
+
+                    # First, check if the pod is ready
+                    if kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null | grep -q "true"; then
+                        echo "✅ Pod Spring Boot est prêt"
+
+                        # Try multiple endpoints
+                        for i in {1..10}; do
+                            echo "Tentative \$i/10..."
+                            if curl -s -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
+                                echo "✅ SUCCÈS! Application accessible avec contexte path: ${CONTEXT_PATH}"
+                                echo "Health check response:"
+                                curl -s -m 5 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
+                                break
+                            elif curl -s -m 10 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
+                                echo "✅ SUCCÈS! Application accessible sans contexte path"
+                                break
+                            elif curl -s -m 10 "http://\${MINIKUBE_IP}:30080/"; then
+                                echo "✅ Réponse du serveur sur la racine"
+                                break
+                            else
+                                echo "⏱️  Attente... (tentative \$i)"
+                                sleep 10
+                            fi
+                        done
                     else
-                        echo "⚠️  L'application ne répond pas encore"
-                        echo "Continuer quand même..."
+                        echo "⚠️  Pod Spring Boot n'est pas encore prêt"
                     fi
 
                     echo ""
@@ -434,7 +513,7 @@ spec:
             // Nettoyage
             sh '''
                 echo "=== Nettoyage des fichiers temporaires ==="
-                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml 2>/dev/null || true
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml /tmp/test-mysql-connection.yaml 2>/dev/null || true
             '''
 
             // Rapport final
@@ -455,6 +534,10 @@ spec:
                     echo "=== URL d'accès ==="
                     echo "Spring Boot (avec contexte): http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}"
                     echo "Health Check: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
+                    echo ""
+                    echo "=== Pour tester manuellement ==="
+                    echo "Test MySQL: kubectl exec -n devops -it \$(kubectl get pods -n devops -l app=mysql -o name) -- mysql -u root -proot123"
+                    echo "Test Spring Boot: curl http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
                 """
             }
         }
@@ -483,7 +566,13 @@ spec:
                     echo "4. Vérification des événements:"
                     kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 || true
                     echo ""
-                    echo "5. Vérification des images dans Minikube:"
+                    echo "5. Vérification des logs MySQL:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=50 || true
+                    echo ""
+                    echo "6. Vérification des logs Spring Boot:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=50 || true
+                    echo ""
+                    echo "7. Vérification des images dans Minikube:"
                     minikube ssh "docker images | grep ${IMAGE_NAME}" || true
                 """
             }
