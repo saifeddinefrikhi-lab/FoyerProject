@@ -125,6 +125,10 @@ spec:
           value: "root123"
         - name: MYSQL_DATABASE
           value: "springdb"
+        - name: MYSQL_ROOT_HOST
+          value: "%"
+        - name: MYSQL_ALLOW_EMPTY_PASSWORD
+          value: "no
         ports:
         - containerPort: 3306
         volumeMounts:
