@@ -104,9 +104,8 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  # Utilisez emptyDir ou une autre méthode si hostPath pose problème
   hostPath:
-    path: "/tmp/mysql-data"  # Utilisez /tmp au lieu de /data/mysql
+    path: "/tmp/mysql-data"
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -185,7 +184,7 @@ EOF
 
                     echo "=== Configuration des permissions MySQL ==="
                     # Attendre que le pod soit prêt
-                    for i in {1..20}; do
+                    for i in \$(seq 1 20); do
                         POD_NAME=\$(kubectl get pods -n devops -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                         if [ -n "\$POD_NAME" ]; then
                             echo "Tentative \$i/20: Vérification du pod \$POD_NAME..."
@@ -316,7 +315,8 @@ spec:
                     MINIKUBE_IP=\$(minikube ip)
 
                     echo "Tentative de connexion..."
-                    for i in {1..10}; do
+                    # CORRECTED FOR LOOP - using seq instead of {1..10} expansion
+                    for i in \$(seq 1 10); do
                         echo "Tentative \$i/10..."
                         if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
                             echo "✅ Application accessible avec contexte path!"
@@ -335,6 +335,58 @@ spec:
                     echo ""
                     echo "=== État final ==="
                     kubectl get all -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+
+        stage('Debug Application') {
+            steps {
+                echo "🐛 Debug de l'application..."
+                sh """
+                    echo "=== Vérification interne de l'application ==="
+                    POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+                    if [ -n "\$POD_NAME" ]; then
+                        echo "1. Vérification des logs d'erreur..."
+                        kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=200 | grep -i error || echo "Aucune erreur trouvée"
+
+                        echo ""
+                        echo "2. Test de l'application depuis l'intérieur du pod..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- sh -c "
+                            if command -v curl > /dev/null; then
+                                echo 'Test avec curl depuis le pod:'
+                                curl -s http://localhost:8080${CONTEXT_PATH}/actuator/health || echo 'Échec avec contexte path'
+                                curl -s http://localhost:8080/actuator/health || echo 'Échec sans contexte path'
+                            else
+                                echo 'Installation de curl...'
+                                apk add --no-cache curl 2>/dev/null || apt-get update && apt-get install -y curl 2>/dev/null
+                                curl -s http://localhost:8080${CONTEXT_PATH}/actuator/health || echo 'Échec avec contexte path'
+                                curl -s http://localhost:8080/actuator/health || echo 'Échec sans contexte path'
+                            fi
+                        "
+
+                        echo ""
+                        echo "3. Vérification des processus en cours d'exécution..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- ps aux
+
+                        echo ""
+                        echo "4. Vérification des ports en écoute..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- netstat -tlnp 2>/dev/null || kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- ss -tlnp 2>/dev/null || echo "Impossible de vérifier les ports"
+                    fi
+
+                    echo ""
+                    echo "=== Vérification de la connexion MySQL ==="
+                    MYSQL_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                    if [ -n "\$MYSQL_POD" ]; then
+                        echo "Test de connexion à MySQL depuis le pod Spring Boot..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- sh -c "
+                            if command -v curl > /dev/null; then
+                                curl -s mysql-service:3306 && echo 'MySQL accessible' || echo 'MySQL inaccessible'
+                            else
+                                timeout 2 bash -c 'cat < /dev/null > /dev/tcp/mysql-service/3306' 2>/dev/null && echo 'MySQL accessible' || echo 'MySQL inaccessible'
+                            fi
+                        "
+                    fi
                 """
             }
         }
