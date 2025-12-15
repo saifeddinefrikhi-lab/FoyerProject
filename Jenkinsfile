@@ -458,8 +458,14 @@ spec:
         always {
             echo "🏁 Pipeline terminé"
 
-            // Ajouter un lien vers SonarQube
-            script {
+            // Nettoyage
+            sh '''
+                echo "=== Nettoyage des fichiers temporaires ==="
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml 2>/dev/null || true
+            '''
+
+            // Rapport final
+            sh """
                 echo "=== RAPPORT FINAL ==="
                 echo "Image Docker: ${IMAGE_NAME}:${IMAGE_TAG}"
                 echo "Namespace: ${K8S_NAMESPACE}"
@@ -469,60 +475,52 @@ spec:
                 echo "Dashboard SonarQube: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
                 echo "Projet SonarQube: ${SONAR_HOST_URL}/project/overview?id=${SONAR_PROJECT_KEY}"
 
-                MINIKUBE_IP=$(minikube ip)
+                # Obtenir l'IP de Minikube
+                MINIKUBE_IP=\$(minikube ip)
                 echo ""
                 echo "=== URL d'accès ==="
-                echo "Application: http://${MINIKUBE_IP}:30080${CONTEXT_PATH}"
-                echo "API Foyer: http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
+                echo "Application: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}"
+                echo "API Foyer: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
                 echo ""
                 echo "=== Pour tester manuellement ==="
                 echo "1. Test MySQL: kubectl exec -n devops -it \$(kubectl get pods -n devops -l app=mysql -o name | head -1) -- mysql -u root -proot123"
-                echo "2. Test Spring Boot: curl -s http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
-                echo "3. Test API: curl -s http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
-            }
-
-            // Nettoyage
-            sh '''
-                echo "=== Nettoyage des fichiers temporaires ==="
-                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml 2>/dev/null || true
-            '''
+                echo "2. Test Spring Boot: curl -s http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
+                echo "3. Test API: curl -s http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
+            """
         }
 
         success {
             echo "✅ Pipeline exécuté avec succès!"
-            script {
-                // Envoyer une notification ou créer un rapport
+            sh """
                 echo "=== QUALITÉ DU CODE ==="
                 echo "✅ L'analyse SonarQube a été effectuée avec succès"
                 echo "📊 Consultez le rapport: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
-            }
+            """
         }
 
         failure {
             echo "💥 Le pipeline a échoué"
-            script {
-                sh """
-                    echo "=== DEBUG INFO ==="
-                    echo "1. Pods MySQL:"
-                    kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o wide || true
-                    echo ""
-                    echo "2. Logs MySQL:"
-                    kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=100 || true
-                    echo ""
-                    echo "3. Pods Spring Boot:"
-                    kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o wide || true
-                    echo ""
-                    echo "4. Logs Spring Boot:"
-                    kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=200 || true
-                    echo ""
-                    echo "5. Événements:"
-                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 || true
-                    echo ""
-                    echo "6. SonarQube Status:"
-                    echo "   URL: ${SONAR_HOST_URL}"
-                    echo "   Projet: ${SONAR_PROJECT_KEY}"
-                """
-            }
+            sh """
+                echo "=== DEBUG INFO ==="
+                echo "1. Pods MySQL:"
+                kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o wide || true
+                echo ""
+                echo "2. Logs MySQL:"
+                kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=100 || true
+                echo ""
+                echo "3. Pods Spring Boot:"
+                kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o wide || true
+                echo ""
+                echo "4. Logs Spring Boot:"
+                kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=200 || true
+                echo ""
+                echo "5. Événements:"
+                kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 || true
+                echo ""
+                echo "6. SonarQube Status:"
+                echo "   URL: ${SONAR_HOST_URL}"
+                echo "   Projet: ${SONAR_PROJECT_KEY}"
+            """
         }
     }
 }
