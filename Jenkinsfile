@@ -286,7 +286,10 @@ EOF
             steps {
                 echo "🚀 Déploiement de l'application Spring Boot..."
                 script {
-                    String yamlContent = """apiVersion: v1
+                    // Create the YAML file directly without extra indentation
+                    sh """
+                        cat > spring-deployment.yaml << 'EOF'
+        apiVersion: v1
         kind: Service
         metadata:
           name: spring-service
@@ -375,9 +378,8 @@ EOF
                   limits:
                     memory: "1Gi"
                     cpu: "500m"
-        """
-
-                    writeFile file: 'spring-deployment.yaml', text: yamlContent
+        EOF
+                    """
 
                     sh """
                         echo "=== Vérification du YAML ==="
