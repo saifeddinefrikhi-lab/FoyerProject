@@ -5,7 +5,7 @@ pipeline {
         IMAGE_NAME = "saiffrikhi/foyer_project"
         IMAGE_TAG = "${BUILD_NUMBER}"
         K8S_NAMESPACE = "devops"
-        CONTEXT_PATH = "/"  // Changé pour simplifier
+        CONTEXT_PATH = "/tp-foyer"  // Rétabli le contexte path original
     }
 
     triggers {
@@ -40,162 +40,24 @@ pipeline {
             }
         }
 
-        stage('Test Local - Correct Context Path') {
+        stage('Cleanup & Setup MySQL Storage') {
             steps {
-                echo "🧪 Test local..."
-                script {
-                    try {
-                        sh """
-                            echo "=== Démarrage de l'application en local ==="
-                            java -jar target/*.jar \\
-                                --spring.datasource.url=jdbc:h2:mem:testdb \\
-                                --spring.datasource.driver-class-name=org.h2.Driver \\
-                                --spring.datasource.username=sa \\
-                                --spring.datasource.password= \\
-                                --spring.jpa.database-platform=org.hibernate.dialect.H2Dialect \\
-                                --spring.jpa.hibernate.ddl-auto=create-drop \\
-                                --server.port=8081 \\
-                                > /tmp/app.log 2>&1 &
-                            APP_PID=\$!
-
-                            echo "Application démarrée avec PID: \$APP_PID"
-                            echo "Attente de démarrage (30 secondes)..."
-                            sleep 30
-
-                            echo "=== Test de l'endpoint health ==="
-                            if curl -s -f http://localhost:8081/actuator/health; then
-                                echo ""
-                                echo "✅ Application locale fonctionne!"
-                                kill \$APP_PID
-                                exit 0
-                            else
-                                echo "❌ Échec du test local"
-                                echo "=== Logs de l'application (derniers 100 lignes) ==="
-                                tail -100 /tmp/app.log
-                                kill \$APP_PID 2>/dev/null || true
-                                exit 1
-                            fi
-                        """
-                    } catch (Exception e) {
-                        echo "⚠️ Test local a échoué, mais on continue..."
-                        // Ne pas échouer le pipeline ici
-                    }
-                }
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                echo "🐳 Construction de l'image Docker..."
+                echo "🧹 Nettoyage et préparation du stockage MySQL..."
                 sh """
-                    # Créez un Dockerfile simple et efficace
-                    cat > Dockerfile.jenkins << 'EOF'
-FROM eclipse-temurin:17-jre-alpine
-WORKDIR /app
-COPY target/*.jar app.jar
-EXPOSE 8080
-ENV SPRING_JPA_HIBERNATE_DDL_AUTO=update
-ENV SPRING_JPA_SHOW_SQL=false
-ENV SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.mysql.cj.jdbc.Driver
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
-EOF
+                    echo "=== Suppression des anciennes ressources MySQL ==="
+                    kubectl delete deployment mysql -n ${K8S_NAMESPACE} --ignore-not-found=true --timeout=60s || true
+                    kubectl delete service mysql-service -n ${K8S_NAMESPACE} --ignore-not-found=true --timeout=60s || true
+                    kubectl delete pvc mysql-pvc -n ${K8S_NAMESPACE} --ignore-not-found=true --timeout=60s || true
+                    kubectl delete pv mysql-pv --ignore-not-found=true --timeout=60s || true
 
-                    echo "=== Construction de l'image ==="
-                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile.jenkins .
+                    echo "=== Attente pour la suppression complète ==="
+                    sleep 15
 
-                    echo "=== Tag latest ==="
-                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+                    echo "=== Création du répertoire de stockage sur minikube ==="
+                    minikube ssh "sudo mkdir -p /data/mysql && sudo chmod 777 /data/mysql" || echo "Répertoire déjà créé"
 
-                    echo "=== Liste des images ==="
-                    docker images | grep ${IMAGE_NAME}
-                """
-            }
-        }
-
-        stage('Test Docker Image') {
-            steps {
-                echo "🧪 Test Docker..."
-                script {
-                    try {
-                        sh """
-                            echo "=== Démarrage du conteneur Docker ==="
-                            docker run -d --name test-container-${BUILD_NUMBER} \\
-                              -e SPRING_DATASOURCE_URL="jdbc:h2:mem:testdb" \\
-                              -e SPRING_DATASOURCE_DRIVER_CLASS_NAME="org.h2.Driver" \\
-                              -e SPRING_DATASOURCE_USERNAME="sa" \\
-                              -e SPRING_DATASOURCE_PASSWORD="" \\
-                              -e SPRING_JPA_HIBERNATE_DDL_AUTO="create-drop" \\
-                              -p 18080:8080 \\
-                              ${IMAGE_NAME}:${IMAGE_TAG}
-
-                            echo "Attente de démarrage (40 secondes)..."
-                            sleep 40
-
-                            echo "=== Test avec health endpoint ==="
-                            echo "URL: http://localhost:18080/actuator/health"
-
-                            if curl -s -f http://localhost:18080/actuator/health; then
-                                echo ""
-                                echo "✅ Docker fonctionne!"
-                                docker stop test-container-${BUILD_NUMBER}
-                                docker rm test-container-${BUILD_NUMBER}
-                            else
-                                echo "=== Logs du conteneur ==="
-                                docker logs test-container-${BUILD_NUMBER} --tail=100
-                                echo "❌ Échec du test"
-                                docker stop test-container-${BUILD_NUMBER} || true
-                                docker rm test-container-${BUILD_NUMBER} || true
-                                exit 1
-                            fi
-                        """
-                    } catch (Exception e) {
-                        echo "⚠️ Test Docker a échoué, mais on continue pour Kubernetes..."
-                    }
-                }
-            }
-        }
-
-        stage('Docker Login & Push') {
-            steps {
-                echo "Connexion + push vers DockerHub..."
-                withCredentials([usernamePassword(
-                    credentialsId: 'docker-hub',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                        echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                        docker push ${IMAGE_NAME}:latest
-                    """
-                }
-            }
-        }
-
-        stage('Clean Old Kubernetes Resources') {
-            steps {
-                echo "🧹 Nettoyage des ressources Kubernetes..."
-                sh """
-                    # Supprimez les ressources Spring Boot existantes
-                    kubectl delete deployment spring-app -n ${K8S_NAMESPACE} --ignore-not-found=true --wait=true
-                    kubectl delete service spring-service -n ${K8S_NAMESPACE} --ignore-not-found=true --wait=true
-                    sleep 10
-                """
-            }
-        }
-
-        stage('Verify MySQL is Ready') {
-            steps {
-                echo "🔍 Vérification de MySQL..."
-                script {
-                    // D'abord, s'assurer que les ressources MySQL existent
-                    sh """
-                        echo "=== Création des ressources MySQL si nécessaire ==="
-
-                        # Vérifier si le PV existe
-                        if ! kubectl get pv mysql-pv > /dev/null 2>&1; then
-                            echo "Création du PersistentVolume..."
-                            cat > /tmp/mysql-pv.yaml << 'EOF'
+                    echo "=== Création du PV et PVC MySQL ==="
+                    cat > /tmp/mysql-storage.yaml << 'EOF'
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -205,10 +67,10 @@ spec:
     storage: 2Gi
   accessModes:
     - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: "/data/mysql"
     type: DirectoryOrCreate
-  storageClassName: standard
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -221,15 +83,23 @@ spec:
   resources:
     requests:
       storage: 2Gi
-  storageClassName: standard
+  volumeName: mysql-pv
 EOF
-                            kubectl apply -f /tmp/mysql-pv.yaml
-                        fi
+                    kubectl apply -f /tmp/mysql-storage.yaml
 
-                        # Vérifier si MySQL deployment existe
-                        if ! kubectl get deployment mysql -n ${K8S_NAMESPACE} > /dev/null 2>&1; then
-                            echo "Création du déploiement MySQL..."
-                            cat > /tmp/mysql-deployment.yaml << 'EOF'
+                    echo "=== Vérification du PV et PVC ==="
+                    kubectl get pv
+                    kubectl get pvc -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+
+        stage('Deploy MySQL') {
+            steps {
+                echo "🗄️  Déploiement de MySQL..."
+                sh """
+                    echo "=== Création du déploiement MySQL ==="
+                    cat > /tmp/mysql-deployment.yaml << 'EOF'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -268,25 +138,19 @@ spec:
         readinessProbe:
           tcpSocket:
             port: 3306
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          timeoutSeconds: 3
         livenessProbe:
           tcpSocket:
             port: 3306
-          initialDelaySeconds: 60
-          periodSeconds: 20
+          initialDelaySeconds: 30
+          periodSeconds: 10
       volumes:
       - name: mysql-storage
         persistentVolumeClaim:
           claimName: mysql-pvc
-EOF
-                            kubectl apply -f /tmp/mysql-deployment.yaml
-                        fi
-
-                        # Vérifier si MySQL service existe
-                        if ! kubectl get service mysql-service -n ${K8S_NAMESPACE} > /dev/null 2>&1; then
-                            echo "Création du service MySQL..."
-                            cat > /tmp/mysql-service.yaml << 'EOF'
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -300,65 +164,127 @@ spec:
       targetPort: 3306
   type: ClusterIP
 EOF
-                            kubectl apply -f /tmp/mysql-service.yaml
+                    kubectl apply -f /tmp/mysql-deployment.yaml
+
+                    echo "=== Attente du démarrage de MySQL ==="
+                    for i in {1..30}; do
+                        echo "Tentative $i/30..."
+                        if kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q Running; then
+                            echo "✅ MySQL est en cours d'exécution."
+                            sleep 10  # Donner plus de temps pour l'initialisation
+                            break
                         fi
-                    """
+                        sleep 10
+                    done
 
-                    // Attendre que MySQL soit prêt
-                    sh """
-                        echo "=== Attente du démarrage de MySQL ==="
-                        timeout=300
-                        interval=10
-                        elapsed=0
+                    echo "=== Vérification finale ==="
+                    kubectl get pods,svc -n ${K8S_NAMESPACE}
+                """
+            }
+        }
 
-                        while [ \$elapsed -lt \$timeout ]; do
-                            if kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q Running; then
-                                echo "✅ MySQL pod est en cours d'exécution."
+        stage('Test MySQL Connection') {
+            steps {
+                echo "🔍 Test de connexion à MySQL..."
+                sh """
+                    echo "=== Test de connexion à MySQL ==="
+                    timeout=120
+                    interval=5
+                    elapsed=0
 
-                                # Vérifier que MySQL est accessible
-                                POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-                                if kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysqladmin ping -h localhost -u root -proot123 2>/dev/null; then
-                                    echo "✅ MySQL est accessible et répond."
+                    while [ \$elapsed -lt \$timeout ]; do
+                        POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
-                                    # Vérifier que la base de données existe
-                                    if kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "SHOW DATABASES LIKE 'springdb';" 2>/dev/null | grep -q springdb; then
-                                        echo "✅ Base de données 'springdb' existe."
-                                        break
-                                    else
-                                        echo "⚠️ Base de données 'springdb' n'existe pas encore."
-                                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "CREATE DATABASE IF NOT EXISTS springdb;"
-                                        echo "✅ Base de données créée."
-                                        break
-                                    fi
-                                fi
+                        if [ -n "\$POD_NAME" ]; then
+                            echo "Test de connexion au pod MySQL: \$POD_NAME"
+                            if kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysqladmin ping -h localhost -u root -proot123 2>/dev/null; then
+                                echo "✅ MySQL est accessible!"
+
+                                # Vérifier/Créer la base de données
+                                kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "
+                                    CREATE DATABASE IF NOT EXISTS springdb;
+                                    SHOW DATABASES;
+                                " 2>/dev/null && echo "✅ Base de données vérifiée/créée"
+                                break
                             fi
-
-                            echo "⏱️  Attente de MySQL... (\$elapsed/\$timeout secondes)"
-                            sleep \$interval
-                            elapsed=\$((elapsed + interval))
-                        done
-
-                        if [ \$elapsed -ge \$timeout ]; then
-                            echo "❌ Timeout en attendant MySQL"
-                            echo "=== Détails du pod MySQL ==="
-                            kubectl describe pod -n ${K8S_NAMESPACE} -l app=mysql
-                            echo "=== Logs MySQL ==="
-                            kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=50
-                            exit 1
                         fi
 
-                        echo "=== État final de MySQL ==="
-                        kubectl get pods,svc -n ${K8S_NAMESPACE} -l app=mysql
+                        echo "⏱️  Attente... (\$elapsed/\$timeout secondes)"
+                        sleep \$interval
+                        elapsed=\$((elapsed + interval))
+                    done
+
+                    if [ \$elapsed -ge \$timeout ]; then
+                        echo "❌ Timeout en attendant MySQL"
+                        echo "=== Logs MySQL ==="
+                        kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=50
+                        exit 1
+                    fi
+                """
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "🐳 Construction de l'image Docker..."
+                sh """
+                    # Créez un Dockerfile simple
+                    cat > Dockerfile.jenkins << 'EOF'
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+EOF
+
+                    echo "=== Construction de l'image ==="
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile.jenkins .
+
+                    echo "=== Tag latest ==="
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+
+                    echo "=== Liste des images ==="
+                    docker images | grep ${IMAGE_NAME} | head -5
+                """
+            }
+        }
+
+        stage('Docker Login & Push') {
+            steps {
+                echo "📤 Push vers DockerHub..."
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
                     """
                 }
             }
         }
 
-        stage('Deploy Spring Boot to Kubernetes') {
+        stage('Clean Old Spring Boot Resources') {
             steps {
-                echo "🚀 Déploiement Spring Boot sur Kubernetes..."
+                echo "🧹 Nettoyage des anciennes ressources Spring Boot..."
+                sh """
+                    kubectl delete deployment spring-app -n ${K8S_NAMESPACE} --ignore-not-found=true --timeout=60s || true
+                    kubectl delete service spring-service -n ${K8S_NAMESPACE} --ignore-not-found=true --timeout=60s || true
+                    sleep 10
+
+                    # Nettoyer les pods terminés
+                    kubectl delete pods -n ${K8S_NAMESPACE} --field-selector=status.phase!=Running --timeout=60s 2>/dev/null || true
+                """
+            }
+        }
+
+        stage('Deploy Spring Boot Application') {
+            steps {
+                echo "🚀 Déploiement de l'application Spring Boot..."
                 script {
-                    writeFile file: 'k8s-spring-deployment.yaml', text: """
+                    writeFile file: 'spring-deployment.yaml', text: """
 apiVersion: v1
 kind: Service
 metadata:
@@ -412,9 +338,10 @@ spec:
           value: "INFO"
         - name: SERVER_SERVLET_CONTEXT_PATH
           value: "${CONTEXT_PATH}"
+        # Probes avec le bon contexte path
         readinessProbe:
           httpGet:
-            path: /actuator/health
+            path: ${CONTEXT_PATH}/actuator/health
             port: 8080
           initialDelaySeconds: 90
           periodSeconds: 15
@@ -422,7 +349,7 @@ spec:
           failureThreshold: 5
         livenessProbe:
           httpGet:
-            path: /actuator/health
+            path: ${CONTEXT_PATH}/actuator/health
             port: 8080
           initialDelaySeconds: 120
           periodSeconds: 20
@@ -438,21 +365,14 @@ spec:
 """
 
                     sh """
-                        echo "=== Application du déploiement Spring Boot ==="
-                        kubectl apply -f k8s-spring-deployment.yaml
+                        echo "=== Application du déploiement ==="
+                        kubectl apply -f spring-deployment.yaml
 
-                        echo "=== Attente du démarrage (90 secondes) ==="
-                        sleep 90
+                        echo "=== Attente du démarrage (120 secondes) ==="
+                        sleep 120
 
                         echo "=== État du déploiement ==="
-                        kubectl get pods,svc,deploy -n ${K8S_NAMESPACE}
-
-                        echo "=== Vérification des logs (premier pod) ==="
-                        POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                        if [ -n "\$POD_NAME" ]; then
-                            echo "Pod: \$POD_NAME"
-                            kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=50
-                        fi
+                        kubectl get pods,svc,deploy -n ${K8S_NAMESPACE} -o wide
                     """
                 }
             }
@@ -467,36 +387,104 @@ spec:
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide
 
                         echo ""
-                        echo "=== Test de connexion interne ==="
+                        echo "=== Logs de l'application Spring Boot ==="
                         POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                         if [ -n "\$POD_NAME" ]; then
-                            echo "Test de l'application depuis l'intérieur du pod:"
-                            kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- \\
-                              sh -c "apk add --no-cache curl 2>/dev/null && curl -s http://localhost:8080/actuator/health || curl -s http://127.0.0.1:8080/actuator/health" || \\
-                              echo "Impossible de tester depuis le pod"
+                            echo "Pod: \$POD_NAME"
+                            kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=50
+                        else
+                            echo "Aucun pod Spring Boot trouvé"
                         fi
 
                         echo ""
-                        echo "=== Test de connexion externe ==="
+                        echo "=== Test de l'application ==="
                         MINIKUBE_IP=\$(minikube ip)
                         echo "Minikube IP: \$MINIKUBE_IP"
-                        echo "Test: http://\${MINIKUBE_IP}:30080/actuator/health"
+                        echo "Test 1: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
+                        echo "Test 2: http://\${MINIKUBE_IP}:30080/actuator/health"
 
-                        # Essayer plusieurs fois
-                        for i in {1..5}; do
-                            echo "Tentative \$i..."
-                            if curl -s -f http://\${MINIKUBE_IP}:30080/actuator/health; then
-                                echo ""
-                                echo "✅ Application accessible depuis l'extérieur!"
+                        # Essayer plusieurs fois avec différents chemins
+                        for attempt in {1..10}; do
+                            echo ""
+                            echo "Tentative \$attempt..."
+
+                            # Essayer avec contexte path
+                            if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
+                                echo "✅ SUCCÈS avec contexte path: ${CONTEXT_PATH}"
                                 break
                             fi
+
+                            # Essayer sans contexte path
+                            if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
+                                echo "✅ SUCCÈS sans contexte path"
+                                break
+                            fi
+
+                            echo "❌ Les deux tentatives ont échoué, attente 10 secondes..."
                             sleep 10
                         done
 
-                        if [ \$? -ne 0 ]; then
-                            echo "⚠️  L'application n'est pas accessible, vérification des logs..."
-                            kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=100
+                        # Vérification finale
+                        echo ""
+                        echo "=== Vérification finale des services ==="
+                        kubectl get svc -n ${K8S_NAMESPACE}
+                    """
+                }
+            }
+        }
+
+        stage('Debug if Needed') {
+            when {
+                expression { currentBuild.result == 'FAILURE' || currentBuild.result == 'UNSTABLE' }
+            }
+            steps {
+                echo "🐛 Debug avancé..."
+                script {
+                    sh """
+                        echo "=== DIAGNOSTIC COMPLET ==="
+
+                        echo "1. Tous les pods:"
+                        kubectl get pods -n ${K8S_NAMESPACE} -o wide
+
+                        echo ""
+                        echo "2. Événements récents:"
+                        kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -30
+
+                        echo ""
+                        echo "3. Logs MySQL:"
+                        MYSQL_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "none")
+                        if [ "\$MYSQL_POD" != "none" ]; then
+                            kubectl logs -n ${K8S_NAMESPACE} \$MYSQL_POD --tail=50
                         fi
+
+                        echo ""
+                        echo "4. Logs Spring Boot:"
+                        SPRING_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "none")
+                        if [ "\$SPRING_POD" != "none" ]; then
+                            kubectl logs -n ${K8S_NAMESPACE} \$SPRING_POD --tail=100
+
+                            echo ""
+                            echo "=== Test depuis l'intérieur du pod ==="
+                            kubectl exec -n ${K8S_NAMESPACE} \$SPRING_POD -- sh -c "
+                                echo 'Test MySQL depuis le pod:'
+                                nc -zv mysql-service 3306 && echo '✅ MySQL accessible' || echo '❌ MySQL inaccessible'
+
+                                echo 'Variables d\\'environnement:'
+                                env | grep -i spring
+                                env | grep -i server
+                            " || true
+                        fi
+
+                        echo ""
+                        echo "=== COMMANDES DE DÉPANNAGE ==="
+                        echo "1. Accéder à MySQL:"
+                        echo "   kubectl run mysql-client -n ${K8S_NAMESPACE} --rm -it --image=mysql:8.0 -- mysql -h mysql-service -u root -proot123"
+                        echo ""
+                        echo "2. Accéder au pod Spring Boot:"
+                        echo "   kubectl exec -n ${K8S_NAMESPACE} \$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}') -- sh"
+                        echo ""
+                        echo "3. Vérifier le PV/PVC:"
+                        echo "   kubectl get pv,pvc -A"
                     """
                 }
             }
@@ -509,27 +497,28 @@ spec:
 
             // Nettoyage
             sh '''
-                echo "=== Nettoyage ==="
-                rm -f Dockerfile.jenkins k8s-spring-deployment.yaml /tmp/mysql-*.yaml 2>/dev/null || true
-                docker rm -f test-container-* 2>/dev/null || true
+                echo "=== Nettoyage des fichiers temporaires ==="
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-*.yaml 2>/dev/null || true
             '''
 
             // Rapport final
             script {
                 sh """
                     echo "=== RAPPORT FINAL ==="
-                    echo "Image Docker: ${IMAGE_NAME}:${IMAGE_TAG}"
+                    echo "Build: ${BUILD_NUMBER}"
+                    echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
                     echo "Namespace: ${K8S_NAMESPACE}"
+                    echo "Contexte: ${CONTEXT_PATH}"
 
                     echo ""
-                    echo "=== État final Kubernetes ==="
+                    echo "=== État Kubernetes ==="
                     kubectl get all -n ${K8S_NAMESPACE} || true
 
+                    MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "N/A")
                     echo ""
                     echo "=== URL d'accès ==="
-                    MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "Minikube non disponible")
-                    echo "Application: http://\${MINIKUBE_IP}:30080"
-                    echo "Health: http://\${MINIKUBE_IP}:30080/actuator/health"
+                    echo "Spring Boot (avec contexte): http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}"
+                    echo "Health Check: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
                 """
             }
         }
@@ -539,49 +528,20 @@ spec:
 
             script {
                 sh """
-                    echo "=== Test final ==="
+                    echo "=== TEST FINAL ==="
                     MINIKUBE_IP=\$(minikube ip)
-                    if curl -s "http://\${MINIKUBE_IP}:30080/actuator/health" | grep -q '"status":"UP"'; then
-                        echo "✅ Application fonctionne correctement!"
-                    else
-                        echo "⚠️  L'application répond mais le statut n'est pas UP"
-                    fi
+                    echo "Test de l'endpoint health:"
+                    curl -s -m 30 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health" || echo "⚠️  L'application ne répond pas"
                 """
             }
         }
 
         failure {
             echo "💥 Le pipeline a échoué"
-
             script {
-                sh """
-                    echo "=== DIAGNOSTIC ==="
-
-                    echo "1. État des pods:"
-                    kubectl get pods -n ${K8S_NAMESPACE} || true
-
-                    echo ""
-                    echo "2. Logs MySQL:"
-                    kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=100 2>/dev/null || echo "Pas de logs MySQL"
-
-                    echo ""
-                    echo "3. Logs Spring Boot:"
-                    kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=100 2>/dev/null || echo "Pas de logs Spring Boot"
-
-                    echo ""
-                    echo "4. Événements:"
-                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 2>/dev/null || true
-
-                    echo ""
-                    echo "=== COMMANDES DE DÉPANNAGE ==="
-                    echo "Pour tester MySQL:"
-                    echo "  kubectl run mysql-test -n ${K8S_NAMESPACE} --rm -it --image=mysql:8.0 -- mysql -h mysql-service -u root -proot123 -e 'SHOW DATABASES;'"
-                    echo ""
-                    echo "Pour accéder au pod Spring Boot:"
-                    echo "  kubectl exec -n ${K8S_NAMESPACE} \$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}') -- sh"
-                """
+                // Envoyer des notifications si nécessaire
+                echo "Le pipeline a échoué au build ${BUILD_NUMBER}"
             }
         }
     }
-
 }
