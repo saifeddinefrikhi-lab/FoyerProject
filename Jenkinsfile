@@ -10,7 +10,7 @@ pipeline {
         SONAR_HOST_URL = "http://172.30.40.173:9000"
         SONAR_PROJECT_KEY = "foyer-project"
         SONAR_TOKEN = credentials('sonar-token')
-        MINIKUBE_IP = "192.168.49.2"  // Your static Minikube IP
+        MINIKUBE_IP = "192.168.49.2"  // From your logs: minikube docker-env shows this IP
     }
 
     triggers {
@@ -145,30 +145,12 @@ EOF
             }
         }
 
-        stage('Deploy MySQL') {
+        stage('Deploy MySQL - Simple Approach') {
             steps {
-                echo "🗄️  Déploiement de MySQL..."
+                echo "🗄️  Déploiement de MySQL (approche simplifiée)..."
                 sh """
-                    echo "=== Création du répertoire de données ==="
-                    minikube ssh "sudo mkdir -p /tmp/mysql-data && sudo chmod 777 /tmp/mysql-data"
-
-                    echo "=== Création du PV et PVC MySQL ==="
-                    cat > /tmp/mysql-storage.yaml << 'EOF'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: mysql-pv
-spec:
-  capacity:
-    storage: 2Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: "/tmp/mysql-data"
-    type: DirectoryOrCreate
-  storageClassName: manual
----
+                    echo "=== Création du déploiement MySQL avec stockage simple ==="
+                    cat > /tmp/mysql-simple.yaml << 'EOF'
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -180,12 +162,8 @@ spec:
   resources:
     requests:
       storage: 2Gi
-  storageClassName: manual
-EOF
-                    kubectl apply -f /tmp/mysql-storage.yaml
-
-                    echo "=== Création du déploiement MySQL ==="
-                    cat > /tmp/mysql-deployment.yaml << 'EOF'
+  storageClassName: standard
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -241,19 +219,19 @@ spec:
       targetPort: 3306
   type: ClusterIP
 EOF
-                    kubectl apply -f /tmp/mysql-deployment.yaml
+                    kubectl apply -f /tmp/mysql-simple.yaml
 
-                    echo "=== Attente du démarrage de MySQL (2 minutes) ==="
-                    sleep 120
+                    echo "=== Attente du démarrage de MySQL (90 secondes) ==="
+                    sleep 90
 
                     echo "=== Vérification de l'état MySQL ==="
                     kubectl get pods,svc -n ${K8S_NAMESPACE}
 
                     echo "=== Configuration des permissions MySQL ==="
-                    for i in \$(seq 1 30); do
+                    for i in \$(seq 1 20); do
                         POD_NAME=\$(kubectl get pods -n devops -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                         if [ -n "\$POD_NAME" ]; then
-                            echo "Tentative \$i/30: Vérification du pod \$POD_NAME..."
+                            echo "Tentative \$i/20: Vérification du pod \$POD_NAME..."
                             POD_STATUS=\$(kubectl get pod -n devops \$POD_NAME -o jsonpath='{.status.phase}' 2>/dev/null)
                             if [ "\$POD_STATUS" = "Running" ]; then
                                 echo "✅ MySQL est en cours d'exécution. Configuration des permissions..."
@@ -502,7 +480,7 @@ spec:
             // Nettoyage
             sh '''
                 echo "=== Nettoyage des fichiers temporaires ==="
-                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml /tmp/spring-configmap.yaml /tmp/spring-secret.yaml 2>/dev/null || true
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-simple.yaml /tmp/spring-configmap.yaml /tmp/spring-secret.yaml 2>/dev/null || true
             '''
 
             // Rapport final
@@ -570,7 +548,7 @@ spec:
                 kubectl get configmap,secret -n ${K8S_NAMESPACE} || true
                 echo ""
                 echo "7. Minikube status:"
-                minikube status || true
+                minikube status 2>/dev/null || echo "Minikube status non disponible"
             """
         }
     }
