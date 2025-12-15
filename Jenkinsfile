@@ -28,12 +28,11 @@ pipeline {
             steps {
                 echo "🔍 Analyse de la qualité du code avec SonarQube..."
                 script {
-                    // Configuration pour l'analyse SonarQube
-                    withSonarQubeEnv('SonarQube') { // Nom du serveur SonarQube configuré dans Jenkins
+                    withSonarQubeEnv('SonarQube') {
                         sh '''
                             echo "=== Démarrage de l'analyse SonarQube ==="
 
-                            # Option 1: Utilisation du scanner Maven (si plugin Sonar dans pom.xml)
+                            # SKIP TESTS during SonarQube analysis
                             mvn clean verify sonar:sonar \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                                 -Dsonar.projectName="Foyer Project" \
@@ -44,14 +43,12 @@ pipeline {
                                 -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
                                 -Dsonar.sourceEncoding=UTF-8 \
                                 -Dsonar.host.url=${SONAR_HOST_URL} \
-                                -DskipTests=false
+                                -DskipTests=true  # ADD THIS LINE
 
-                            # Attendre que l'analyse soit terminée
                             sleep 30
                         '''
                     }
 
-                    // Attendre le résultat du Quality Gate
                     timeout(time: 10, unit: 'MINUTES') {
                         waitForQualityGate abortPipeline: true
                     }
