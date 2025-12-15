@@ -55,9 +55,6 @@ EOF
                     echo "=== Construction de l'image ==="
                     docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile.jenkins .
 
-                    echo "=== Tag latest ==="
-                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
-
                     echo "=== Liste des images dans Minikube ==="
                     docker images | grep ${IMAGE_NAME} | head -5
 
@@ -67,33 +64,35 @@ EOF
             }
         }
 
-        stage('Clean Old Resources') {
+        stage('Clean Old Resources - No Sudo') {
             steps {
-                echo "🧹 Nettoyage des anciennes ressources..."
+                echo "🧹 Nettoyage des anciennes ressources (sans sudo)..."
                 sh """
-                    # Supprimez toutes les ressources existantes
+                    # Supprimez toutes les ressources existantes sans utiliser sudo
+                    echo "=== Suppression des déploiements et services ==="
                     kubectl delete deployment spring-app -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete service spring-service -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete deployment mysql -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete service mysql-service -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete pvc mysql-pvc -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete pv mysql-pv --ignore-not-found=true
+                    kubectl delete configmap --all -n ${K8S_NAMESPACE} --ignore-not-found=true
+                    kubectl delete secret --all -n ${K8S_NAMESPACE} --ignore-not-found=true
 
                     sleep 10
 
-                    # Nettoyage du stockage
-                    sudo rm -rf /data/mysql/*
-                    sudo mkdir -p /data/mysql
-                    sudo chmod 777 /data/mysql
+                    # Vérifiez qu'il ne reste plus de pods
+                    echo "=== État après nettoyage ==="
+                    kubectl get pods -n ${K8S_NAMESPACE} || true
                 """
             }
         }
 
-        stage('Deploy MySQL') {
+        stage('Deploy MySQL - Alternative Storage') {
             steps {
-                echo "🗄️  Déploiement de MySQL..."
+                echo "🗄️  Déploiement de MySQL avec stockage alternatif..."
                 sh """
-                    echo "=== Création du PV et PVC MySQL ==="
+                    echo "=== Création du PV et PVC MySQL (sans hostPath) ==="
                     cat > /tmp/mysql-storage.yaml << 'EOF'
 apiVersion: v1
 kind: PersistentVolume
@@ -105,8 +104,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
+  # Utilisez emptyDir ou une autre méthode si hostPath pose problème
   hostPath:
-    path: "/data/mysql"
+    path: "/tmp/mysql-data"  # Utilisez /tmp au lieu de /data/mysql
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -184,26 +184,32 @@ EOF
                     sleep 60
 
                     echo "=== Configuration des permissions MySQL ==="
-                    POD_NAME=\$(kubectl get pods -n devops -l app=mysql -o jsonpath='{.items[0].metadata.name}')
+                    # Attendre que le pod soit prêt
+                    for i in {1..20}; do
+                        POD_NAME=\$(kubectl get pods -n devops -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                        if [ -n "\$POD_NAME" ]; then
+                            echo "Tentative \$i/20: Vérification du pod \$POD_NAME..."
+                            if kubectl get pod -n devops \$POD_NAME -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
+                                sleep 10  # Donner plus de temps
 
-                    # Attendre que MySQL soit prêt
-                    for i in {1..30}; do
-                        if kubectl exec -n devops \$POD_NAME -- mysqladmin ping -h localhost -u root -proot123 2>/dev/null; then
-                            echo "✅ MySQL est prêt. Configuration des permissions..."
-
-                            # Fix MySQL permissions
-                            kubectl exec -n devops \$POD_NAME -- mysql -u root -proot123 -e "
-                                CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root123';
-                                GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-                                FLUSH PRIVILEGES;
-                                CREATE DATABASE IF NOT EXISTS springdb;
-                            "
-                            echo "✅ Permissions configurées"
-                            break
+                                # Fix MySQL permissions
+                                echo "✅ MySQL est en cours d'exécution. Configuration des permissions..."
+                                kubectl exec -n devops \$POD_NAME -- mysql -u root -proot123 -e "
+                                    CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root123';
+                                    GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+                                    FLUSH PRIVILEGES;
+                                    CREATE DATABASE IF NOT EXISTS springdb;
+                                    SELECT '✅ Base de données créée' as Status;
+                                " 2>/dev/null || echo "⚠️  Erreur lors de la configuration, réessayer..."
+                                break
+                            fi
                         fi
-                        echo "⏱️  Attente MySQL... (\$i/30)"
+                        echo "⏱️  Attente MySQL... (\$i/20)"
                         sleep 10
                     done
+
+                    echo "=== Vérification finale MySQL ==="
+                    kubectl get pods,svc -n ${K8S_NAMESPACE}
                 """
             }
         }
@@ -258,6 +264,10 @@ spec:
           value: "com.mysql.cj.jdbc.Driver"
         - name: SPRING_JPA_HIBERNATE_DDL_AUTO
           value: "update"
+        - name: SERVER_SERVLET_CONTEXT_PATH
+          value: "${CONTEXT_PATH}"
+        - name: SPRING_APPLICATION_NAME
+          value: "foyer-app"
         resources:
           requests:
             memory: "512Mi"
@@ -274,8 +284,8 @@ spec:
                     echo "=== Application du déploiement ==="
                     kubectl apply -f spring-deployment.yaml
 
-                    echo "=== Attente du démarrage (2 minutes) ==="
-                    sleep 120
+                    echo "=== Attente du démarrage (90 secondes) ==="
+                    sleep 90
 
                     echo "=== Vérification de l'état ==="
                     kubectl get pods,svc -n ${K8S_NAMESPACE}
@@ -290,22 +300,34 @@ spec:
                     echo "=== Attente supplémentaire ==="
                     sleep 30
 
+                    echo "=== Vérification des pods ==="
+                    kubectl get pods -n ${K8S_NAMESPACE} -o wide
+
+                    echo ""
+                    echo "=== Logs Spring Boot ==="
+                    POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                    if [ -n "\$POD_NAME" ]; then
+                        echo "Pod: \$POD_NAME"
+                        kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=50
+                    fi
+
+                    echo ""
                     echo "=== Test de l'application ==="
                     MINIKUBE_IP=\$(minikube ip)
 
                     echo "Tentative de connexion..."
                     for i in {1..10}; do
                         echo "Tentative \$i/10..."
-                        if curl -s -f "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
-                            echo "✅ Application accessible!"
+                        if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
+                            echo "✅ Application accessible avec contexte path!"
                             echo "=== Test de l'API Foyer ==="
                             curl -s "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
                             break
-                        elif curl -s -f "http://\${MINIKUBE_IP}:30080/actuator/health"; then
+                        elif curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
                             echo "✅ Application accessible (sans contexte path)"
                             break
                         else
-                            echo "⏱️  En attente..."
+                            echo "⏱️  En attente... (\$i/10)"
                             sleep 15
                         fi
                     done
@@ -343,7 +365,32 @@ spec:
                     echo "API Foyer: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
                     echo ""
                     echo "=== Pour tester manuellement ==="
-                    echo "Test MySQL: kubectl exec -n devops -it \$(kubectl get pods -n devops -l app=mysql -o name) -- mysql -u root -proot123"
+                    echo "1. Test MySQL: kubectl exec -n devops -it \$(kubectl get pods -n devops -l app=mysql -o name | head -1) -- mysql -u root -proot123"
+                    echo "2. Test Spring Boot: curl -s http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
+                    echo "3. Test API: curl -s http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
+                """
+            }
+        }
+
+        failure {
+            echo "💥 Le pipeline a échoué"
+            script {
+                sh """
+                    echo "=== DEBUG INFO ==="
+                    echo "1. Pods MySQL:"
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o wide || true
+                    echo ""
+                    echo "2. Logs MySQL:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=100 || true
+                    echo ""
+                    echo "3. Pods Spring Boot:"
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o wide || true
+                    echo ""
+                    echo "4. Logs Spring Boot:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=200 || true
+                    echo ""
+                    echo "5. Événements:"
+                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 || true
                 """
             }
         }
