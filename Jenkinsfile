@@ -286,8 +286,7 @@ EOF
             steps {
                 echo "🚀 Déploiement de l'application Spring Boot..."
                 script {
-                    writeFile file: 'spring-deployment.yaml', text: """
-        apiVersion: v1
+                    String yamlContent = """apiVersion: v1
         kind: Service
         metadata:
           name: spring-service
@@ -318,13 +317,10 @@ EOF
               labels:
                 app: spring-app
             spec:
-              # Add image pull secret if you created one
-              # imagePullSecrets:
-              # - name: dockerhub-secret
               containers:
               - name: spring-app
                 image: ${IMAGE_NAME}:${IMAGE_TAG}
-                imagePullPolicy: Always  # Force pull to get latest
+                imagePullPolicy: Always
                 ports:
                 - containerPort: 8080
                 env:
@@ -348,7 +344,6 @@ EOF
                   value: "foyer-app"
                 - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
                   value: "health,info"
-                # Add startup probe for Spring Boot
                 startupProbe:
                   httpGet:
                     path: ${CONTEXT_PATH}/actuator/health
@@ -382,7 +377,15 @@ EOF
                     cpu: "500m"
         """
 
+                    writeFile file: 'spring-deployment.yaml', text: yamlContent
+
                     sh """
+                        echo "=== Vérification du YAML ==="
+                        cat spring-deployment.yaml
+
+                        echo "=== Validation du YAML (dry-run) ==="
+                        kubectl apply -f spring-deployment.yaml --dry-run=client || exit 1
+
                         echo "=== Application du déploiement ==="
                         kubectl apply -f spring-deployment.yaml
 
@@ -399,7 +402,6 @@ EOF
                                 echo "✅ Pod est en cours d'exécution"
                                 break
                             elif [ "\$POD_STATUS" = "Pending" ] || [ "\$POD_STATUS" = "ContainerCreating" ]; then
-                                # Get more details
                                 POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                                 if [ -n "\$POD_NAME" ]; then
                                     echo "=== Événements du pod ==="
