@@ -69,10 +69,9 @@ pipeline {
         stage('Pre-pull Image Using Kubernetes Pod') {
             steps {
                 echo "📥 Pre-pulling image using Kubernetes pod..."
-                sh """
-                    echo "=== Creating a pod to pre-pull the image ==="
-                    cat > /tmp/pre-pull.yaml << 'EOF'
-apiVersion: v1
+                script {
+                    // Create pre-pull pod
+                    String prePullYaml = """apiVersion: v1
 kind: Pod
 metadata:
   name: image-puller-${BUILD_NUMBER}
@@ -84,26 +83,32 @@ spec:
     command: ["sh", "-c", "echo 'Image pulled successfully' && sleep 3600"]
     imagePullPolicy: Always
   restartPolicy: Never
-EOF
+"""
 
+                    writeFile file: '/tmp/pre-pull.yaml', text: prePullYaml
+                }
+
+                sh """
+                    echo "=== Creating a pod to pre-pull the image ==="
                     kubectl apply -f /tmp/pre-pull.yaml --namespace=${K8S_NAMESPACE}
 
                     echo "=== Waiting for pod to pull image (2 minutes) ==="
-                    timeout 120 bash -c '
-                        while true; do
-                            PHASE=$(kubectl get pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE} -o jsonpath="{.status.phase}" 2>/dev/null || echo "Pending")
-                            if [ "$PHASE" = "Running" ]; then
-                                echo "✅ Image successfully pulled!"
-                                break
-                            elif [ "$PHASE" = "Failed" ] || [ "$PHASE" = "Error" ]; then
-                                echo "❌ Failed to pull image"
-                                kubectl describe pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE}
-                                exit 1
-                            fi
-                            echo "Pod status: $PHASE, waiting..."
-                            sleep 5
-                        done
-                    ' || echo "⚠️ Timeout waiting for image pull, continuing anyway..."
+                    # Wait for up to 2 minutes
+                    for i in \$(seq 1 24); do
+                        echo "Check \$i/24..."
+                        PHASE=\$(kubectl get pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
+                        if [ "\$PHASE" = "Running" ]; then
+                            echo "✅ Image successfully pulled!"
+                            break
+                        elif [ "\$PHASE" = "Failed" ] || [ "\$PHASE" = "Error" ]; then
+                            echo "❌ Failed to pull image"
+                            kubectl describe pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE}
+                            # Continue anyway - the main deployment might work
+                            break
+                        fi
+                        echo "Pod status: \$PHASE, waiting..."
+                        sleep 5
+                    done
 
                     echo "=== Cleaning up pre-pull pod ==="
                     kubectl delete pod image-puller-${BUILD_NUMBER} --namespace=${K8S_NAMESPACE} --ignore-not-found=true
@@ -294,8 +299,6 @@ spec:
       labels:
         app: spring-app
     spec:
-      # Add this to force image pull and handle slow network
-      imagePullSecrets: []
       containers:
       - name: spring-app
         image: ${IMAGE_NAME}:${IMAGE_TAG}
