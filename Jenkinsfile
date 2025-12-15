@@ -277,95 +277,96 @@ EOF
                 script {
                     // Create YAML content with local image
                     String yamlContent = """apiVersion: v1
-        kind: Service
-        metadata:
-          name: spring-service
-          namespace: ${K8S_NAMESPACE}
-        spec:
-          selector:
-            app: spring-app
-          ports:
-            - port: 8050        # Changed from 8080 to 8050
-              targetPort: 8050  # Changed from 8080 to 8050
-              nodePort: 30080
-          type: NodePort
-        ---
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: spring-app
-          namespace: ${K8S_NAMESPACE}
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: spring-app
-          strategy:
-            type: Recreate
-          template:
-            metadata:
-              labels:
-                app: spring-app
-            spec:
-              containers:
-              - name: spring-app
-                image: ${IMAGE_NAME}:${IMAGE_TAG}
-                imagePullPolicy: Never
-                ports:
-                - containerPort: 8050  # Changed from 8080 to 8050
-                env:
-                - name: SPRING_DATASOURCE_URL
-                  value: "jdbc:mysql://mysql-service:3306/springdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
-                - name: SPRING_DATASOURCE_USERNAME
-                  value: "root"
-                - name: SPRING_DATASOURCE_PASSWORD
-                  value: "root123"
-                - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
-                  value: "com.mysql.cj.jdbc.Driver"
-                - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-                  value: "update"
-                - name: SPRING_JPA_SHOW_SQL
-                  value: "false"
-                - name: LOGGING_LEVEL_ROOT
-                  value: "INFO"
-                - name: SERVER_SERVLET_CONTEXT_PATH
-                  value: "${CONTEXT_PATH}"
-                - name: SPRING_APPLICATION_NAME
-                  value: "foyer-app"
-                - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
-                  value: "health,info"
-                resources:
-                  requests:
-                    memory: "512Mi"
-                    cpu: "250m"
-                  limits:
-                    memory: "1Gi"
-                    cpu: "500m"
-        """
+kind: Service
+metadata:
+  name: spring-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: spring-app
+  ports:
+    - port: 8050
+      targetPort: 8050
+      nodePort: 30080
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-app
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spring-app
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: spring-app
+    spec:
+      containers:
+      - name: spring-app
+        image: ${IMAGE_NAME}:${IMAGE_TAG}
+        imagePullPolicy: Never  # Use local image, don't pull from registry
+        ports:
+        - containerPort: 8050
+        env:
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:mysql://mysql-service:3306/springdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "root"
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "root123"
+        - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+          value: "com.mysql.cj.jdbc.Driver"
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          value: "update"
+        - name: SPRING_JPA_SHOW_SQL
+          value: "false"
+        - name: LOGGING_LEVEL_ROOT
+          value: "INFO"
+        - name: SERVER_SERVLET_CONTEXT_PATH
+          value: "${CONTEXT_PATH}"
+        - name: SPRING_APPLICATION_NAME
+          value: "foyer-app"
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          value: "health,info"
+        # Simplified probes - remove for now
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+"""
 
-                            // Write the YAML file
-                            writeFile file: 'spring-deployment.yaml', text: yamlContent
-                        }
-
-                        sh """
-                            echo "=== Application du déploiement ==="
-                            kubectl apply -f spring-deployment.yaml
-
-                            echo "=== Attente du démarrage (2 minutes) ==="
-                            sleep 120
-
-                            echo "=== Vérification de l'état ==="
-                            kubectl get pods,svc -n ${K8S_NAMESPACE}
-
-                            echo "=== Logs du pod Spring Boot ==="
-                            POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                            if [ -n "\$POD_NAME" ]; then
-                                echo "Pod: \$POD_NAME"
-                                kubectl logs \$POD_NAME -n ${K8S_NAMESPACE} --tail=50 || echo "Pas encore de logs"
-                            fi
-                        """
-                    }
+                    // Write the YAML file
+                    writeFile file: 'spring-deployment.yaml', text: yamlContent
                 }
+
+                sh """
+                    echo "=== Application du déploiement ==="
+                    kubectl apply -f spring-deployment.yaml
+
+                    echo "=== Attente du démarrage (2 minutes) ==="
+                    sleep 120
+
+                    echo "=== Vérification de l'état ==="
+                    kubectl get pods,svc -n ${K8S_NAMESPACE}
+
+                    echo "=== Logs du pod Spring Boot ==="
+                    POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                    if [ -n "\$POD_NAME" ]; then
+                        echo "Pod: \$POD_NAME"
+                        kubectl logs \$POD_NAME -n ${K8S_NAMESPACE} --tail=50 || echo "Pas encore de logs"
+                    fi
+                """
+            }
+        }
 
         stage('Verify Deployment') {
             steps {
