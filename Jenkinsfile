@@ -504,58 +504,7 @@ EOF
             }
         }
 
-        stage('Verify Deployment') {
-            steps {
-                echo "✅ Vérification du déploiement..."
-                sh """
-                    echo "=== État des pods ==="
-                    kubectl get pods -n ${K8S_NAMESPACE} -o wide
 
-                    echo ""
-                    echo "=== Logs de l'application Spring Boot ==="
-                    POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                    if [ -n "\$POD_NAME" ]; then
-                        echo "Pod: \$POD_NAME"
-                        kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=50
-                    else
-                        echo "Aucun pod Spring Boot trouvé"
-                    fi
-
-                    echo ""
-                    echo "=== Test de l'application ==="
-                    MINIKUBE_IP=\$(minikube ip)
-                    echo "Minikube IP: \$MINIKUBE_IP"
-                    echo "Test 1: http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
-                    echo "Test 2: http://\${MINIKUBE_IP}:30080/actuator/health"
-
-                    # Essayer plusieurs fois avec différents chemins
-                    for attempt in \$(seq 1 10); do
-                        echo ""
-                        echo "Tentative \$attempt..."
-
-                        # Essayer avec contexte path
-                        if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
-                            echo "✅ SUCCÈS avec contexte path: ${CONTEXT_PATH}"
-                            break
-                        fi
-
-                        # Essayer sans contexte path
-                        if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
-                            echo "✅ SUCCÈS sans contexte path"
-                            break
-                        fi
-
-                        echo "❌ Les deux tentatives ont échoué, attente 10 secondes..."
-                        sleep 10
-                    done
-
-                    # Vérification finale
-                    echo ""
-                    echo "=== Vérification finale des services ==="
-                    kubectl get svc -n ${K8S_NAMESPACE}
-                """
-            }
-        }
     }
 
     post {
