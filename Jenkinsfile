@@ -282,106 +282,114 @@ EOF
             }
         }
 
-
         stage('Deploy Spring Boot Application') {
             steps {
                 echo "🚀 Déploiement de l'application Spring Boot..."
-                sh """
-                    # Create the YAML file
-                    cat > spring-deployment.yaml << 'EOF'
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: spring-service
-          namespace: ${K8S_NAMESPACE}
-        spec:
-          selector:
-            app: spring-app
-          ports:
-            - port: 8080
-              targetPort: 8080
-              nodePort: 30080
-          type: NodePort
-        ---
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: spring-app
-          namespace: ${K8S_NAMESPACE}
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: spring-app
-          strategy:
-            type: Recreate
-          template:
-            metadata:
-              labels:
-                app: spring-app
-            spec:
-              containers:
-              - name: spring-app
-                image: ${IMAGE_NAME}:${IMAGE_TAG}
-                imagePullPolicy: Always
-                ports:
-                - containerPort: 8080
-                env:
-                - name: SPRING_DATASOURCE_URL
-                  value: "jdbc:mysql://mysql-service:3306/springdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
-                - name: SPRING_DATASOURCE_USERNAME
-                  value: "root"
-                - name: SPRING_DATASOURCE_PASSWORD
-                  value: "root123"
-                - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
-                  value: "com.mysql.cj.jdbc.Driver"
-                - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-                  value: "update"
-                - name: SPRING_JPA_SHOW_SQL
-                  value: "false"
-                - name: LOGGING_LEVEL_ROOT
-                  value: "INFO"
-                - name: SERVER_SERVLET_CONTEXT_PATH
-                  value: "${CONTEXT_PATH}"
-                - name: SPRING_APPLICATION_NAME
-                  value: "foyer-app"
-                - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
-                  value: "health,info"
-                startupProbe:
-                  httpGet:
-                    path: ${CONTEXT_PATH}/actuator/health
-                    port: 8080
-                  initialDelaySeconds: 60
-                  periodSeconds: 10
-                  failureThreshold: 30
-                  timeoutSeconds: 5
-                readinessProbe:
-                  httpGet:
-                    path: ${CONTEXT_PATH}/actuator/health
-                    port: 8080
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                  failureThreshold: 3
-                livenessProbe:
-                  httpGet:
-                    path: ${CONTEXT_PATH}/actuator/health
-                    port: 8080
-                  initialDelaySeconds: 90
-                  periodSeconds: 20
-                  timeoutSeconds: 5
-                  failureThreshold: 3
-                resources:
-                  requests:
-                    memory: "512Mi"
-                    cpu: "250m"
-                  limits:
-                    memory: "1Gi"
-                    cpu: "500m"
-        EOF
+                script {
+                    // Create YAML content without extra indentation
+                    String yamlContent = """apiVersion: v1
+kind: Service
+metadata:
+  name: spring-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: spring-app
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-app
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spring-app
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: spring-app
+    spec:
+      containers:
+      - name: spring-app
+        image: ${IMAGE_NAME}:${IMAGE_TAG}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:mysql://mysql-service:3306/springdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "root"
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "root123"
+        - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+          value: "com.mysql.cj.jdbc.Driver"
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          value: "update"
+        - name: SPRING_JPA_SHOW_SQL
+          value: "false"
+        - name: LOGGING_LEVEL_ROOT
+          value: "INFO"
+        - name: SERVER_SERVLET_CONTEXT_PATH
+          value: "${CONTEXT_PATH}"
+        - name: SPRING_APPLICATION_NAME
+          value: "foyer-app"
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          value: "health,info"
+        startupProbe:
+          httpGet:
+            path: ${CONTEXT_PATH}/actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: ${CONTEXT_PATH}/actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: ${CONTEXT_PATH}/actuator/health
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+"""
 
+                    // Write the YAML file
+                    writeFile file: 'spring-deployment.yaml', text: yamlContent
+                }
+
+                sh """
                     echo "=== Vérification du YAML ==="
+                    echo "Fichier créé: spring-deployment.yaml"
+                    ls -la spring-deployment.yaml
+                    echo ""
+                    echo "Contenu du fichier:"
                     cat spring-deployment.yaml
+                    echo ""
 
                     echo "=== Validation du YAML (dry-run) ==="
                     kubectl apply -f spring-deployment.yaml --dry-run=client || exit 1
@@ -446,6 +454,10 @@ EOF
                         kubectl describe pod -n ${K8S_NAMESPACE} \$POD_NAME | tail -50 || true
                     else
                         echo "❌ Aucun pod Spring Boot trouvé"
+                        echo "=== Vérification des déploiements ==="
+                        kubectl get deployments -n ${K8S_NAMESPACE}
+                        echo "=== Vérification des services ==="
+                        kubectl get services -n ${K8S_NAMESPACE}
                         exit 1
                     fi
 
@@ -504,8 +516,6 @@ EOF
                 """
             }
         }
-
-
     }
 
     post {
@@ -515,7 +525,7 @@ EOF
             // Nettoyage
             sh '''
                 echo "=== Nettoyage des fichiers temporaires ==="
-                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-*.yaml 2>/dev/null || true
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml 2>/dev/null || true
             '''
 
             // Rapport final
@@ -557,6 +567,22 @@ EOF
             echo "💥 Le pipeline a échoué"
             script {
                 echo "Le pipeline a échoué au build ${BUILD_NUMBER}"
+
+                // Debug information on failure
+                sh """
+                    echo "=== DEBUG INFO ==="
+                    echo "1. Vérification des déploiements:"
+                    kubectl get deployments -n ${K8S_NAMESPACE} || true
+                    echo ""
+                    echo "2. Vérification des services:"
+                    kubectl get services -n ${K8S_NAMESPACE} || true
+                    echo ""
+                    echo "3. Vérification des pods:"
+                    kubectl get pods -n ${K8S_NAMESPACE} || true
+                    echo ""
+                    echo "4. Vérification des événements:"
+                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' || true
+                """
             }
         }
     }
