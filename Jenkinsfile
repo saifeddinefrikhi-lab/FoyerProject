@@ -553,7 +553,5 @@ spec:
                 echo "   Test Spring Boot: curl -v http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
             """
         }
-
-
     }
 }
