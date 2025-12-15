@@ -7,6 +7,11 @@ pipeline {
         K8S_NAMESPACE = "devops"
         CONTEXT_PATH = "/tp-foyer"
         DOCKERHUB_CREDENTIALS = credentials('docker-hub')
+
+    }
+
+    triggers{
+        githubPush()
     }
 
     stages {
@@ -37,86 +42,49 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Docker Image ') {
             steps {
                 echo "🐳 Construction de l'image Docker..."
                 sh """
-                    echo "=== Construction de l'image Docker ==="
-                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    # Switch to Minikube's Docker daemon
+                    eval \$(minikube docker-env)
 
-                    echo "=== Liste des images construites ==="
-                    docker images | grep ${IMAGE_NAME}
+                    # Créez un Dockerfile simple
+                    cat > Dockerfile.jenkins << 'EOF'
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+EOF
+
+                    echo "=== Construction de l'image ==="
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile.jenkins .
+
+                    echo "=== Liste des images dans Minikube ==="
+                    docker images | grep ${IMAGE_NAME} | head -5
+
+                    # Switch back to normal Docker daemon
+                    eval \$(minikube docker-env -u)
                 """
             }
         }
 
         stage('Push to DockerHub') {
-            steps {
-                echo "🚀 Pushing image to DockerHub..."
-                sh """
-                    echo "=== Login to DockerHub ==="
-                    echo "${DOCKERHUB_CREDENTIALS_PSW}" | docker login -u "${DOCKERHUB_CREDENTIALS_USR}" --password-stdin
+                    steps {
+                        echo "🚀 Pushing image to DockerHub..."
+                        sh """
+                            echo "=== Login to DockerHub ==="
+                            echo "${DOCKERHUB_CREDENTIALS_PSW}" | docker login -u "${DOCKERHUB_CREDENTIALS_USR}" --password-stdin
 
-                    echo "=== Pushing image ==="
-                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                            echo "=== Pushing image ==="
+                            docker push ${IMAGE_NAME}:${IMAGE_TAG}
 
-                    echo "=== Logout from DockerHub ==="
-                    docker logout
-                """
-            }
-        }
-
-        stage('Pre-pull Image Using Kubernetes Pod') {
-            steps {
-                echo "📥 Pre-pulling image using Kubernetes pod..."
-                script {
-                    // Create pre-pull pod
-                    String prePullYaml = """apiVersion: v1
-kind: Pod
-metadata:
-  name: image-puller-${BUILD_NUMBER}
-  namespace: ${K8S_NAMESPACE}
-spec:
-  containers:
-  - name: puller
-    image: ${IMAGE_NAME}:${IMAGE_TAG}
-    command: ["sh", "-c", "echo 'Image pulled successfully' && sleep 3600"]
-    imagePullPolicy: Always
-  restartPolicy: Never
-"""
-
-                    writeFile file: '/tmp/pre-pull.yaml', text: prePullYaml
+                            echo "=== Logout from DockerHub ==="
+                            docker logout
+                        """
+                    }
                 }
-
-                sh """
-                    echo "=== Creating a pod to pre-pull the image ==="
-                    kubectl apply -f /tmp/pre-pull.yaml --namespace=${K8S_NAMESPACE}
-
-                    echo "=== Waiting for pod to pull image (2 minutes) ==="
-                    # Wait for up to 2 minutes
-                    for i in \$(seq 1 24); do
-                        echo "Check \$i/24..."
-                        PHASE=\$(kubectl get pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
-                        if [ "\$PHASE" = "Running" ]; then
-                            echo "✅ Image successfully pulled!"
-                            break
-                        elif [ "\$PHASE" = "Failed" ] || [ "\$PHASE" = "Error" ]; then
-                            echo "❌ Failed to pull image"
-                            kubectl describe pod image-puller-${BUILD_NUMBER} -n ${K8S_NAMESPACE}
-                            # Continue anyway - the main deployment might work
-                            break
-                        fi
-                        echo "Pod status: \$PHASE, waiting..."
-                        sleep 5
-                    done
-
-                    echo "=== Cleaning up pre-pull pod ==="
-                    kubectl delete pod image-puller-${BUILD_NUMBER} --namespace=${K8S_NAMESPACE} --ignore-not-found=true
-
-                    rm -f /tmp/pre-pull.yaml
-                """
-            }
-        }
 
         stage('Clean Old Resources - No Sudo') {
             steps {
@@ -131,6 +99,7 @@ spec:
                     kubectl delete pvc mysql-pvc -n ${K8S_NAMESPACE} --ignore-not-found=true
                     kubectl delete pv mysql-pv --ignore-not-found=true
                     kubectl delete configmap --all -n ${K8S_NAMESPACE} --ignore-not-found=true
+                    kubectl delete secret --all -n ${K8S_NAMESPACE} --ignore-not-found=true
 
                     sleep 10
 
@@ -302,7 +271,7 @@ spec:
       containers:
       - name: spring-app
         image: ${IMAGE_NAME}:${IMAGE_TAG}
-        imagePullPolicy: IfNotPresent  # Will pull if not present locally
+        imagePullPolicy: Never
         ports:
         - containerPort: 8080
         env:
@@ -327,25 +296,6 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-        # Add proper probes with longer timeouts
-        startupProbe:
-          httpGet:
-            path: ${CONTEXT_PATH}/actuator/health
-            port: 8080
-          failureThreshold: 60  # 60 * 10 = 600 seconds = 10 minutes
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: ${CONTEXT_PATH}/actuator/health
-            port: 8080
-          initialDelaySeconds: 120
-          periodSeconds: 20
-        livenessProbe:
-          httpGet:
-            path: ${CONTEXT_PATH}/actuator/health
-            port: 8080
-          initialDelaySeconds: 180
-          periodSeconds: 30
 """
 
                     writeFile file: 'spring-deployment.yaml', text: yamlContent
@@ -355,28 +305,10 @@ spec:
                     echo "=== Application du déploiement ==="
                     kubectl apply -f spring-deployment.yaml
 
-                    echo "=== Monitoring pod creation (10 minutes max) ==="
-                    for i in \$(seq 1 60); do
-                        echo "Minute \$i/60..."
-                        POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                        if [ -n "\$POD_NAME" ]; then
-                            POD_STATUS=\$(kubectl get pod \$POD_NAME -n ${K8S_NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-                            echo "Pod: \$POD_NAME, Status: \$POD_STATUS"
+                    echo "=== Attente du démarrage (90 secondes) ==="
+                    sleep 90
 
-                            if [ "\$POD_STATUS" = "Running" ]; then
-                                echo "✅ Pod en cours d'exécution!"
-                                break
-                            elif [ "\$POD_STATUS" = "Failed" ] || [ "\$POD_STATUS" = "Error" ]; then
-                                echo "❌ Pod a échoué"
-                                kubectl describe pod \$POD_NAME -n ${K8S_NAMESPACE}
-                                kubectl logs \$POD_NAME -n ${K8S_NAMESPACE} --tail=50 || true
-                                exit 1
-                            fi
-                        fi
-                        sleep 10
-                    done
-
-                    echo "=== Vérification finale de l'état ==="
+                    echo "=== Vérification de l'état ==="
                     kubectl get pods,svc -n ${K8S_NAMESPACE}
                 """
             }
@@ -386,10 +318,10 @@ spec:
             steps {
                 echo "✅ Vérification du déploiement..."
                 sh """
-                    echo "=== Attente supplémentaire pour l'application ==="
-                    sleep 60
+                    echo "=== Attente supplémentaire ==="
+                    sleep 30
 
-                    echo "=== Vérification finale des pods ==="
+                    echo "=== Vérification des pods ==="
                     kubectl get pods -n ${K8S_NAMESPACE} -o wide
 
                     echo ""
@@ -397,7 +329,6 @@ spec:
                     POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                     if [ -n "\$POD_NAME" ]; then
                         echo "Pod: \$POD_NAME"
-                        echo "=== Derniers logs (50 lignes) ==="
                         kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=50
                     fi
 
@@ -406,25 +337,78 @@ spec:
                     MINIKUBE_IP=\$(minikube ip)
 
                     echo "Tentative de connexion..."
-                    for i in \$(seq 1 15); do
-                        echo "Tentative \$i/15..."
-                        if curl -s -f -m 20 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
+                    # CORRECTED FOR LOOP - using seq instead of {1..10} expansion
+                    for i in \$(seq 1 10); do
+                        echo "Tentative \$i/10..."
+                        if curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"; then
                             echo "✅ Application accessible avec contexte path!"
                             echo "=== Test de l'API Foyer ==="
                             curl -s "http://\${MINIKUBE_IP}:30080${CONTEXT_PATH}/foyer/getAllFoyers"
                             break
-                        elif curl -s -f -m 20 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
+                        elif curl -s -f -m 10 "http://\${MINIKUBE_IP}:30080/actuator/health"; then
                             echo "✅ Application accessible (sans contexte path)"
                             break
                         else
-                            echo "⏱️  En attente... (\$i/15)"
-                            sleep 20
+                            echo "⏱️  En attente... (\$i/10)"
+                            sleep 15
                         fi
                     done
 
                     echo ""
-                    echo "=== État final du cluster ==="
+                    echo "=== État final ==="
                     kubectl get all -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+
+        stage('Debug Application') {
+            steps {
+                echo "🐛 Debug de l'application..."
+                sh """
+                    echo "=== Vérification interne de l'application ==="
+                    POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+                    if [ -n "\$POD_NAME" ]; then
+                        echo "1. Vérification des logs d'erreur..."
+                        kubectl logs -n ${K8S_NAMESPACE} \$POD_NAME --tail=200 | grep -i error || echo "Aucune erreur trouvée"
+
+                        echo ""
+                        echo "2. Test de l'application depuis l'intérieur du pod..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- sh -c "
+                            if command -v curl > /dev/null; then
+                                echo 'Test avec curl depuis le pod:'
+                                curl -s http://localhost:8080${CONTEXT_PATH}/actuator/health || echo 'Échec avec contexte path'
+                                curl -s http://localhost:8080/actuator/health || echo 'Échec sans contexte path'
+                            else
+                                echo 'Installation de curl...'
+                                apk add --no-cache curl 2>/dev/null || apt-get update && apt-get install -y curl 2>/dev/null
+                                curl -s http://localhost:8080${CONTEXT_PATH}/actuator/health || echo 'Échec avec contexte path'
+                                curl -s http://localhost:8080/actuator/health || echo 'Échec sans contexte path'
+                            fi
+                        "
+
+                        echo ""
+                        echo "3. Vérification des processus en cours d'exécution..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- ps aux
+
+                        echo ""
+                        echo "4. Vérification des ports en écoute..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- netstat -tlnp 2>/dev/null || kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- ss -tlnp 2>/dev/null || echo "Impossible de vérifier les ports"
+                    fi
+
+                    echo ""
+                    echo "=== Vérification de la connexion MySQL ==="
+                    MYSQL_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                    if [ -n "\$MYSQL_POD" ]; then
+                        echo "Test de connexion à MySQL depuis le pod Spring Boot..."
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- sh -c "
+                            if command -v curl > /dev/null; then
+                                curl -s mysql-service:3306 && echo 'MySQL accessible' || echo 'MySQL inaccessible'
+                            else
+                                timeout 2 bash -c 'cat < /dev/null > /dev/tcp/mysql-service/3306' 2>/dev/null && echo 'MySQL accessible' || echo 'MySQL inaccessible'
+                            fi
+                        "
+                    fi
                 """
             }
         }
@@ -437,7 +421,7 @@ spec:
             // Nettoyage
             sh '''
                 echo "=== Nettoyage des fichiers temporaires ==="
-                rm -f spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml /tmp/pre-pull.yaml 2>/dev/null || true
+                rm -f Dockerfile.jenkins spring-deployment.yaml /tmp/mysql-deployment.yaml /tmp/mysql-storage.yaml 2>/dev/null || true
             '''
 
             // Rapport final
@@ -467,14 +451,20 @@ spec:
             script {
                 sh """
                     echo "=== DEBUG INFO ==="
-                    echo "1. Pods Spring Boot:"
+                    echo "1. Pods MySQL:"
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o wide || true
+                    echo ""
+                    echo "2. Logs MySQL:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=mysql --tail=100 || true
+                    echo ""
+                    echo "3. Pods Spring Boot:"
                     kubectl get pods -n ${K8S_NAMESPACE} -l app=spring-app -o wide || true
                     echo ""
-                    echo "2. Détails des pods Spring Boot:"
-                    kubectl describe pods -n ${K8S_NAMESPACE} -l app=spring-app || true
+                    echo "4. Logs Spring Boot:"
+                    kubectl logs -n ${K8S_NAMESPACE} -l app=spring-app --tail=200 || true
                     echo ""
-                    echo "3. Événements du namespace:"
-                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -30 || true
+                    echo "5. Événements:"
+                    kubectl get events -n ${K8S_NAMESPACE} --sort-by='.lastTimestamp' | tail -20 || true
                 """
             }
         }
