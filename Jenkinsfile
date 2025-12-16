@@ -20,35 +20,45 @@ pipeline {
     stages {
         stage('Prepare Environment') {
             steps {
-                echo "⚙️  Préparation de l'environnement..."
                 script {
-                    // First, check and wait for namespace to be deleted if it exists
                     sh '''
                         echo "=== Vérification de l'état du namespace ==="
-                        if kubectl get namespace ${K8S_NAMESPACE} &>/dev/null; then
-                            echo "Le namespace ${K8S_NAMESPACE} existe. Suppression..."
-                            kubectl delete namespace ${K8S_NAMESPACE} --ignore-not-found=true --wait=false
+                        if kubectl get namespace devops &> /dev/null; then
+                            echo "Le namespace devops existe. Suppression des ressources..."
 
-                            # Wait for namespace to be completely deleted
+                            # 1. Delete PVCs first
+                            echo "Suppression des PVCs..."
+                            kubectl delete pvc --all -n devops --ignore-not-found=true || true
+
+                            # 2. Wait for PVCs to be released
+                            sleep 10
+
+                            # 3. Delete namespace
+                            echo "Suppression du namespace..."
+                            kubectl delete namespace devops --ignore-not-found=true
+
+                            # 4. Wait for complete deletion
                             echo "Attente de la suppression complète du namespace..."
-                            for i in {1..30}; do
-                                if ! kubectl get namespace ${K8S_NAMESPACE} &>/dev/null; then
-                                    echo "✅ Namespace ${K8S_NAMESPACE} supprimé"
-                                    break
-                                fi
-                                echo "⏱️  En attente de suppression... (${i}/30)"
+                            TIMEOUT=60
+                            COUNT=0
+                            while kubectl get namespace devops &> /dev/null && [ $COUNT -lt $TIMEOUT ]; do
+                                echo "En attente... ($COUNT/$TIMEOUT)"
                                 sleep 5
+                                COUNT=$((COUNT + 5))
                             done
-                        else
-                            echo "✅ Namespace ${K8S_NAMESPACE} n'existe pas"
+
+                            if [ $COUNT -eq $TIMEOUT ]; then
+                                echo "⚠️ Timeout lors de la suppression du namespace. Forcer la suppression..."
+                                kubectl delete namespace devops --ignore-not-found=true --force --grace-period=0 || true
+                            fi
+
+                            echo "✅ Namespace devops supprimé"
                         fi
 
-                        # Create namespace
                         echo "=== Création du namespace ==="
-                        kubectl create namespace ${K8S_NAMESPACE} || echo "Namespace déjà créé"
-
-                        # Wait a bit for namespace to be ready
+                        kubectl create namespace devops
                         sleep 5
+                        kubectl get namespace devops
                     '''
                 }
             }
