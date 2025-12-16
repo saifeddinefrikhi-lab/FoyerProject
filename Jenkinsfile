@@ -38,10 +38,7 @@ pipeline {
                     '''
                 }
             }
-
         }
-
-
 
         stage('Checkout') {
             steps {
@@ -79,7 +76,6 @@ pipeline {
                     }
                 }
             }
-
         }
 
         stage('Build & Test') {
@@ -152,12 +148,31 @@ EOF
             }
         }
 
+        // FIXED STAGE: Deploy MySQL - Added PersistentVolume and fixed for loop
         stage('Deploy MySQL') {
             steps {
                 echo "🗄️  Déploiement de MySQL..."
                 sh """
-                    echo "=== Creating MySQL deployment ==="
+                    # First, create the data directory
+                    sudo mkdir -p /data/mysql
+                    sudo chmod 777 /data/mysql
+
+                    echo "=== Creating MySQL deployment with PersistentVolume ==="
                     cat > /tmp/mysql.yaml << 'EOF'
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-pv
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/data/mysql"
+    type: DirectoryOrCreate
+  storageClassName: standard
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -229,37 +244,49 @@ EOF
 
                     kubectl apply -f /tmp/mysql.yaml
 
-                    echo "=== Waiting for MySQL to start (120 seconds) ==="
-                    for i in {1..24}; do
-                        echo "⏱️  Waiting... (\${i}/24)"
+                    echo "=== Waiting for MySQL to start ==="
+                    # Fix: Use proper for loop syntax
+                    for i in \$(seq 1 24); do
+                        echo "⏱️  Waiting... (\$i/24)"
                         sleep 5
                     done
 
                     echo "=== Checking MySQL status ==="
-                    kubectl get pods,svc -n ${K8S_NAMESPACE}
+                    kubectl get pods,svc,pv,pvc -n ${K8S_NAMESPACE}
 
                     echo "=== Configuring MySQL permissions ==="
-                    for i in {1..20}; do
+                    # Fix: Use proper for loop syntax
+                    for i in \$(seq 1 20); do
                         POD_NAME=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                         if [ -n "\$POD_NAME" ]; then
-                            echo "Attempt \${i}/20: Checking pod \$POD_NAME..."
+                            echo "Attempt \$i/20: Checking pod \$POD_NAME..."
                             POD_STATUS=\$(kubectl get pod -n ${K8S_NAMESPACE} \$POD_NAME -o jsonpath='{.status.phase}' 2>/dev/null)
                             if [ "\$POD_STATUS" = "Running" ]; then
                                 echo "✅ MySQL is running. Configuring permissions..."
 
                                 # Wait a bit more for MySQL to be fully ready
-                                sleep 20
+                                sleep 30
 
-                                # Configure MySQL permissions
-                                kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "
-                                    CREATE USER IF NOT EXISTS 'spring'@'%' IDENTIFIED BY 'spring123';
-                                    GRANT ALL PRIVILEGES ON springdb.* TO 'spring'@'%';
-                                    GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-                                    FLUSH PRIVILEGES;
-                                    CREATE DATABASE IF NOT EXISTS springdb;
-                                    USE springdb;
-                                    SELECT '✅ Database created and configured' as Status;
-                                " 2>/dev/null && break || echo "⚠️  Retrying in 10 seconds..."
+                                # Configure MySQL permissions - Fix: Use proper MySQL connection
+                                echo "=== Testing MySQL connection ==="
+                                if kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysqladmin ping -u root -proot123 --silent; then
+                                    echo "✅ MySQL is ready for configuration"
+
+                                    # Configure MySQL
+                                    kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- mysql -u root -proot123 -e "
+                                        CREATE USER IF NOT EXISTS 'spring'@'%' IDENTIFIED BY 'spring123';
+                                        GRANT ALL PRIVILEGES ON springdb.* TO 'spring'@'%';
+                                        GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+                                        FLUSH PRIVILEGES;
+                                        CREATE DATABASE IF NOT EXISTS springdb;
+                                        USE springdb;
+                                        SELECT '✅ Database created and configured' as Status;
+                                    "
+                                    echo "✅ MySQL configuration completed successfully"
+                                    break
+                                else
+                                    echo "⚠️  MySQL not ready yet, retrying in 10 seconds..."
+                                fi
                             fi
                         fi
                         sleep 10
@@ -271,12 +298,15 @@ EOF
                     echo "=== Testing MySQL connection ==="
                     MYSQL_POD=\$(kubectl get pods -n ${K8S_NAMESPACE} -l app=mysql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
                     if [ -n "\$MYSQL_POD" ]; then
+                        echo "Testing connection to MySQL pod: \$MYSQL_POD"
+                        kubectl exec -n ${K8S_NAMESPACE} \$MYSQL_POD -- mysqladmin ping -u root -proot123
                         kubectl exec -n ${K8S_NAMESPACE} \$MYSQL_POD -- mysql -u root -proot123 -e "SHOW DATABASES; SELECT 'MySQL operational' as Status;"
                     fi
                 """
             }
         }
 
+        // FIXED STAGE: Deploy Spring Boot - Changed database credentials to match MySQL configuration
         stage('Deploy Spring Boot Application') {
             steps {
                 echo "🚀 Déploiement de l'application Spring Boot..."
@@ -299,16 +329,16 @@ spec:
       containers:
       - name: spring-app
         image: ${IMAGE_NAME}:${IMAGE_TAG}
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent  # Changed from Never to IfNotPresent
         ports:
         - containerPort: 8080
         env:
         - name: SPRING_DATASOURCE_URL
           value: "jdbc:mysql://mysql-service:3306/springdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
         - name: SPRING_DATASOURCE_USERNAME
-          value: "root"
+          value: "spring"  # Changed from "root" to "spring"
         - name: SPRING_DATASOURCE_PASSWORD
-          value: "root123"
+          value: "spring123"  # Changed from "root123" to "spring123"
         - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
           value: "com.mysql.cj.jdbc.Driver"
         - name: SPRING_JPA_HIBERNATE_DDL_AUTO
@@ -359,7 +389,6 @@ spec:
       nodePort: 30080
   type: NodePort
 """
-
                     writeFile file: 'spring-deployment.yaml', text: yamlContent
                 }
 
@@ -367,9 +396,10 @@ spec:
                     echo "=== Applying Spring Boot deployment ==="
                     kubectl apply -f spring-deployment.yaml
 
-                    echo "=== Waiting for Spring Boot to start (4 minutes) ==="
-                    for i in {1..24}; do
-                        echo "⏱️  Waiting for Spring Boot... (\${i}/24)"
+                    echo "=== Waiting for Spring Boot to start ==="
+                    # Fix: Use proper for loop syntax
+                    for i in \$(seq 1 24); do
+                        echo "⏱️  Waiting for Spring Boot... (\$i/24)"
                         sleep 10
                     done
 
@@ -378,6 +408,7 @@ spec:
                 """
             }
         }
+
         stage('Diagnose Issues') {
             steps {
                 echo "🩺 Diagnostic des problèmes..."
@@ -406,7 +437,7 @@ spec:
                     if [ -n "\$POD_NAME" ]; then
                         kubectl exec -n ${K8S_NAMESPACE} \$POD_NAME -- sh -c "
                             echo 'Test de connexion réseau à MySQL...'
-                            nc -z -v mysql-service 3306
+                            timeout 5 nc -z mysql-service 3306 && echo '✅ MySQL est accessible' || echo '❌ MySQL non accessible'
                             echo ''
                             echo 'Test de résolution DNS...'
                             nslookup mysql-service || cat /etc/resolv.conf
@@ -444,8 +475,9 @@ spec:
                 echo "✅ Test de santé de l'application..."
                 sh """
                     echo "=== Testing health endpoint ==="
-                    for i in {1..10}; do
-                        echo "Attempt \${i}/10..."
+                    # Fix: Use proper for loop syntax
+                    for i in \$(seq 1 10); do
+                        echo "Attempt \$i/10..."
                         if curl -s -f -m 30 "http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health" > /dev/null; then
                             echo "✅ Application accessible with context path!"
                             echo ""
@@ -457,7 +489,7 @@ spec:
                             echo "✅ Application accessible (without context path)"
                             break
                         else
-                            echo "⏱️  Waiting... (\${i}/10)"
+                            echo "⏱️  Waiting... (\$i/10)"
                             sleep 15
                         fi
                     done
@@ -543,7 +575,5 @@ spec:
                 echo "   Test Spring Boot: curl -v http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
             """
         }
-
-
     }
 }
