@@ -41,6 +41,7 @@ pipeline {
         }
 
 
+
         stage('Checkout') {
             steps {
                 echo "📦 Récupération du code depuis GitHub..."
