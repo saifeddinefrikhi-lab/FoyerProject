@@ -17,66 +17,42 @@ pipeline {
         githubPush()
     }
 
-    stage('Prepare Environment') {
-        steps {
-            script {
-                sh '''
-                    echo "=== Vérification de l'état du namespace ==="
-                    if kubectl get namespace devops &> /dev/null; then
-                        echo "Le namespace devops existe. Suppression des ressources..."
+    stages {
+        stage('Prepare Environment') {
+            steps {
+                echo "⚙️  Préparation de l'environnement..."
+                script {
+                    // First, check and wait for namespace to be deleted if it exists
+                    sh '''
+                        echo "=== Vérification de l'état du namespace ==="
+                        if kubectl get namespace ${K8S_NAMESPACE} &>/dev/null; then
+                            echo "Le namespace ${K8S_NAMESPACE} existe. Suppression..."
+                            kubectl delete namespace ${K8S_NAMESPACE} --ignore-not-found=true --wait=false
 
-                        # 1. Delete all resources in the namespace
-                        echo "Suppression de toutes les ressources dans le namespace..."
-                        kubectl delete all --all -n devops --ignore-not-found=true || true
+                            # Wait for namespace to be completely deleted
+                            echo "Attente de la suppression complète du namespace..."
+                            for i in {1..30}; do
+                                if ! kubectl get namespace ${K8S_NAMESPACE} &>/dev/null; then
+                                    echo "✅ Namespace ${K8S_NAMESPACE} supprimé"
+                                    break
+                                fi
+                                echo "⏱️  En attente de suppression... (${i}/30)"
+                                sleep 5
+                            done
+                        else
+                            echo "✅ Namespace ${K8S_NAMESPACE} n'existe pas"
+                        fi
 
-                        # 2. Delete PVCs
-                        echo "Suppression des PVCs..."
-                        kubectl delete pvc --all -n devops --ignore-not-found=true || true
+                        # Create namespace
+                        echo "=== Création du namespace ==="
+                        kubectl create namespace ${K8S_NAMESPACE} || echo "Namespace déjà créé"
 
-                        # 3. Wait for resources to be cleaned up
-                        echo "Attente de la libération des ressources..."
-                        sleep 10
-
-                        # 4. Delete namespace
-                        echo "Suppression du namespace..."
-                        kubectl delete namespace devops --ignore-not-found=true
-
-                        # 5. Delete any orphaned PVs that were used by devops namespace
-                        echo "Suppression des PersistentVolumes orphelins..."
-                        kubectl get pv -o jsonpath='{.items[?(@.spec.claimRef.namespace=="devops")].metadata.name}' | while read pv; do
-                            if [ -n "$pv" ]; then
-                                echo "Suppression du PV: $pv"
-                                kubectl delete pv "$pv" --ignore-not-found=true
-                            fi
-                        done
-
-                        # 6. Clean Minikube hostpath storage (if using minikube)
-                        echo "Nettoyage du stockage Minikube..."
-                        minikube ssh "sudo rm -rf /tmp/hostpath-provisioner/devops || true"
-
-                        # 7. Wait for namespace to be fully deleted
-                        echo "Attente de la suppression complète du namespace..."
-                        TIMEOUT=30
-                        COUNT=0
-                        while kubectl get namespace devops &> /dev/null && [ $COUNT -lt $TIMEOUT ]; do
-                            echo "En attente... ($COUNT/$TIMEOUT)"
-                            sleep 2
-                            COUNT=$((COUNT + 2))
-                        done
-
-                        echo "✅ Nettoyage complet effectué"
-                    else
-                        echo "Le namespace devops n'existe pas."
-                    fi
-
-                    echo "=== Création du namespace ==="
-                    kubectl create namespace devops
-                    sleep 3
-                    kubectl get namespace devops
-                '''
+                        # Wait a bit for namespace to be ready
+                        sleep 5
+                    '''
+                }
             }
         }
-    }
 
         stage('Checkout') {
             steps {
@@ -195,22 +171,21 @@ EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: mysql-pvc-$(BUILD_NUMBER)  # Use unique name
-  namespace: devops
+  name: mysql-pvc
+  namespace: ${K8S_NAMESPACE}
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
+  storageClassName: standard
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mysql
-  namespace: devops
-  labels:
-    app: mysql
+  namespace: ${K8S_NAMESPACE}
 spec:
   replicas: 1
   selector:
@@ -221,30 +196,32 @@ spec:
       labels:
         app: mysql
     spec:
-      initContainers:
-      - name: clean-mysql-data
-        image: busybox
-        command: ['sh', '-c', 'rm -rf /var/lib/mysql/* || true']
-        volumeMounts:
-        - name: mysql-persistent-storage
-          mountPath: /var/lib/mysql
       containers:
       - name: mysql
         image: mysql:8.0
-        ports:
-        - containerPort: 3306
         env:
         - name: MYSQL_ROOT_PASSWORD
-          value: root123
-        - name: MYSQL_ALLOW_EMPTY_PASSWORD
-          value: "no"
+          value: "root123"
+        - name: MYSQL_DATABASE
+          value: "springdb"
+        - name: MYSQL_ROOT_HOST
+          value: "%"
+        ports:
+        - containerPort: 3306
         volumeMounts:
-        - name: mysql-persistent-storage
+        - name: mysql-storage
           mountPath: /var/lib/mysql
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "250m"
       volumes:
-      - name: mysql-persistent-storage
+      - name: mysql-storage
         persistentVolumeClaim:
-          claimName: mysql-pvc-$(BUILD_NUMBER)
+          claimName: mysql-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -576,7 +553,7 @@ spec:
                 echo "   Test Spring Boot: curl -v http://${MINIKUBE_IP}:30080${CONTEXT_PATH}/actuator/health"
             """
         }
+
+
     }
-
 }
-
