@@ -18,66 +18,7 @@ pipeline {
     }
 
     stages {
-        stage('Prepare Environment') {
-            steps {
-                script {
-                    sh '''
-                        echo "=== Vérification de l'état du namespace ==="
-                        if kubectl get namespace devops &> /dev/null; then
-                            echo "Le namespace devops existe. Suppression des ressources..."
 
-                            # 1. Delete all resources in the namespace
-                            echo "Suppression de toutes les ressources dans le namespace..."
-                            kubectl delete all --all -n devops --ignore-not-found=true || true
-
-                            # 2. Delete PVCs
-                            echo "Suppression des PVCs..."
-                            kubectl delete pvc --all -n devops --ignore-not-found=true || true
-
-                            # 3. Wait for resources to be cleaned up
-                            echo "Attente de la libération des ressources..."
-                            sleep 10
-
-                            # 4. Delete namespace
-                            echo "Suppression du namespace..."
-                            kubectl delete namespace devops --ignore-not-found=true
-
-                            # 5. Delete any orphaned PVs that were used by devops namespace
-                            echo "Suppression des PersistentVolumes orphelins..."
-                            kubectl get pv -o jsonpath='{.items[?(@.spec.claimRef.namespace=="devops")].metadata.name}' | while read pv; do
-                                if [ -n "$pv" ]; then
-                                    echo "Suppression du PV: $pv"
-                                    kubectl delete pv "$pv" --ignore-not-found=true
-                                fi
-                            done
-
-                            # 6. Clean Minikube hostpath storage (if using minikube)
-                            echo "Nettoyage du stockage Minikube..."
-                            minikube ssh "sudo rm -rf /tmp/hostpath-provisioner/devops || true"
-
-                            # 7. Wait for namespace to be fully deleted
-                            echo "Attente de la suppression complète du namespace..."
-                            TIMEOUT=30
-                            COUNT=0
-                            while kubectl get namespace devops &> /dev/null && [ $COUNT -lt $TIMEOUT ]; do
-                                echo "En attente... ($COUNT/$TIMEOUT)"
-                                sleep 2
-                                COUNT=$((COUNT + 2))
-                            done
-
-                            echo "✅ Nettoyage complet effectué"
-                        else
-                            echo "Le namespace devops n'existe pas."
-                        fi
-
-                        echo "=== Création du namespace ==="
-                        kubectl create namespace devops
-                        sleep 3
-                        kubectl get namespace devops
-                    '''
-                }
-            }
-        }
 
         stage('Checkout') {
             steps {
